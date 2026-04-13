@@ -114,6 +114,13 @@ Uint8List _warpImageIsolate(_WarpPayload payload) {
 class PerspectiveService {
   static const _uuid = Uuid();
 
+  /// Maximum multiplier for the output image dimensions relative to the input.
+  ///
+  /// Limits the warped output to at most 2× the source dimension on each axis
+  /// to prevent memory issues from degenerate corner placements that would
+  /// produce an unreasonably large output image.
+  static const int _maxOutputScaleFactor = 2;
+
   /// Performs a perspective warp on the given [image] using [corners].
   ///
   /// Maps the quadrilateral defined by the four [corners] to a rectangle
@@ -124,9 +131,12 @@ class PerspectiveService {
   /// - Width = max(distance(topLeft, topRight), distance(bottomLeft, bottomRight))
   /// - Height = max(distance(topLeft, bottomLeft), distance(topRight, bottomRight))
   static img.Image warpImage(img.Image image, DocumentCorners corners) {
-    final outputWidth = corners.outputWidth.round().clamp(1, image.width * 2);
-    final outputHeight =
-        corners.outputHeight.round().clamp(1, image.height * 2);
+    final outputWidth = corners.outputWidth
+        .round()
+        .clamp(1, image.width * _maxOutputScaleFactor);
+    final outputHeight = corners.outputHeight
+        .round()
+        .clamp(1, image.height * _maxOutputScaleFactor);
 
     final destination = img.Image(
       width: outputWidth,

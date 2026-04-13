@@ -25,7 +25,7 @@ class ScanCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dateFormat = DateFormat('MMM d, yyyy  HH:mm');
+    final dateFormat = DateFormat('MMM d, yyyy HH:mm');
     final theme = Theme.of(context);
 
     return Card(

@@ -112,6 +112,9 @@ class PdfService {
                   // Estimate per-line font size: divide block height by the
                   // number of text lines so the overlay text fits the box
                   // rather than overflowing with a single oversized font.
+                  // Note: this counts explicit newlines only; actual rendered
+                  // lines may differ if text wraps within the block width.
+                  // The clamp keeps the result in a safe range regardless.
                   final lineCount =
                       '\n'.allMatches(block.text).length + 1;
                   final lineHeight =

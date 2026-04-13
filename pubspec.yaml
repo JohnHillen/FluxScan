@@ -1,0 +1,52 @@
+name: fluxscan
+description: "A privacy-focused document scanner for Flutter. Offline-only, no Firebase, no analytics."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Document scanning and OCR
+  cunning_document_scanner: ^2.2.1
+  google_mlkit_text_recognition: ^0.14.0
+  
+  # Image processing
+  image: ^4.5.3
+  
+  # PDF generation and printing
+  pdf: ^3.11.2
+  printing: ^5.13.5
+  
+  # File system and preferences
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.4
+  
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.5.1
+  
+  # State management
+  provider: ^6.1.2
+  
+  # Sharing and permissions
+  share_plus: ^10.1.4
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+  mockito: ^5.4.4
+  build_runner: ^2.4.13
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/scans/

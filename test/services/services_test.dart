@@ -29,7 +29,8 @@ void main() {
 
     test('should produce only black and white pixels', () {
       final image = img.Image(width: 30, height: 30);
-      // Create a gradient image
+      // Create a gradient from black (top-left) to white (bottom-right).
+      // Max x+y is 29+29 = 58, so dividing by 58 maps to 0..255.
       for (var y = 0; y < 30; y++) {
         for (var x = 0; x < 30; x++) {
           final v = ((x + y) * 255 ~/ 58).clamp(0, 255);

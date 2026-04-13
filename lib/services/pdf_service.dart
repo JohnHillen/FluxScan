@@ -112,15 +112,17 @@ class PdfService {
                   return pw.Positioned(
                     left: block.left * uniformScale + offsetX,
                     top: block.top * uniformScale + offsetY,
-                    width: block.width * uniformScale,
-                    height: block.height * uniformScale,
-                    child: pw.Text(
-                      block.text,
-                      style: pw.TextStyle(
-                        // Transparent text: invisible but searchable
-                        color: PdfColor.fromInt(0x00000000),
-                        fontSize: (block.height * uniformScale * 0.8)
-                            .clamp(4.0, 20.0),
+                    child: pw.SizedBox(
+                      width: block.width * uniformScale,
+                      height: block.height * uniformScale,
+                      child: pw.Text(
+                        block.text,
+                        style: pw.TextStyle(
+                          // Transparent text: invisible but searchable
+                          color: PdfColor.fromInt(0x00000000),
+                          fontSize: (block.height * uniformScale * 0.8)
+                              .clamp(4.0, 20.0),
+                        ),
                       ),
                     ),
                   );

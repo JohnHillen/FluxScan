@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fluxscan/services/pdf_service.dart';
+import 'package:fluxscan/services/perspective_service.dart';
 import 'package:fluxscan/services/scanner_service.dart';
 import 'package:image/image.dart' as img;
 
@@ -296,6 +297,334 @@ void main() {
       const exception = ScannerException('test error');
       expect(exception.toString(), 'ScannerException: test error');
       expect(exception.message, 'test error');
+    });
+  });
+
+  group('Corner', () {
+    test('should hold x and y coordinates', () {
+      const corner = Corner(10.5, 20.3);
+      expect(corner.x, 10.5);
+      expect(corner.y, 20.3);
+    });
+
+    test('should format toString correctly', () {
+      const corner = Corner(10.0, 20.0);
+      expect(corner.toString(), 'Corner(10.0, 20.0)');
+    });
+
+    test('should support equality', () {
+      const a = Corner(10.0, 20.0);
+      const b = Corner(10.0, 20.0);
+      const c = Corner(10.0, 30.0);
+
+      expect(a, equals(b));
+      expect(a, isNot(equals(c)));
+    });
+
+    test('should have consistent hashCode for equal corners', () {
+      const a = Corner(5.0, 15.0);
+      const b = Corner(5.0, 15.0);
+      expect(a.hashCode, b.hashCode);
+    });
+  });
+
+  group('DocumentCorners', () {
+    test('should hold four corner points', () {
+      const corners = DocumentCorners(
+        topLeft: Corner(0, 0),
+        topRight: Corner(100, 0),
+        bottomLeft: Corner(0, 100),
+        bottomRight: Corner(100, 100),
+      );
+
+      expect(corners.topLeft, const Corner(0, 0));
+      expect(corners.topRight, const Corner(100, 0));
+      expect(corners.bottomLeft, const Corner(0, 100));
+      expect(corners.bottomRight, const Corner(100, 100));
+    });
+
+    test('should compute output width from longest horizontal edge', () {
+      // Top edge is 100, bottom edge is 120 → output width should be 120
+      const corners = DocumentCorners(
+        topLeft: Corner(10, 0),
+        topRight: Corner(110, 0),
+        bottomLeft: Corner(0, 100),
+        bottomRight: Corner(120, 100),
+      );
+
+      expect(corners.outputWidth, closeTo(120.0, 1.0));
+    });
+
+    test('should compute output height from longest vertical edge', () {
+      // Left edge is 100, right edge is 150 → output height should be 150
+      const corners = DocumentCorners(
+        topLeft: Corner(0, 0),
+        topRight: Corner(100, 0),
+        bottomLeft: Corner(0, 100),
+        bottomRight: Corner(100, 150),
+      );
+
+      expect(corners.outputHeight, closeTo(150.0, 1.0));
+    });
+
+    test('should compute correct dimensions for a perfect rectangle', () {
+      const corners = DocumentCorners(
+        topLeft: Corner(0, 0),
+        topRight: Corner(200, 0),
+        bottomLeft: Corner(0, 300),
+        bottomRight: Corner(200, 300),
+      );
+
+      expect(corners.outputWidth, closeTo(200.0, 0.01));
+      expect(corners.outputHeight, closeTo(300.0, 0.01));
+    });
+
+    test('toString should contain corner info', () {
+      const corners = DocumentCorners(
+        topLeft: Corner(0, 0),
+        topRight: Corner(100, 0),
+        bottomLeft: Corner(0, 100),
+        bottomRight: Corner(100, 100),
+      );
+
+      final str = corners.toString();
+      expect(str, contains('DocumentCorners'));
+      expect(str, contains('Corner'));
+    });
+  });
+
+  group('PerspectiveService.warpImage', () {
+    test('should return an image with dimensions derived from corners', () {
+      // Create a 100x100 test image
+      final image = img.Image(width: 100, height: 100);
+      for (var y = 0; y < 100; y++) {
+        for (var x = 0; x < 100; x++) {
+          image.setPixelRgb(x, y, 128, 128, 128);
+        }
+      }
+
+      const corners = DocumentCorners(
+        topLeft: Corner(0, 0),
+        topRight: Corner(99, 0),
+        bottomLeft: Corner(0, 99),
+        bottomRight: Corner(99, 99),
+      );
+
+      final result = PerspectiveService.warpImage(image, corners);
+
+      // Output dimensions should be close to 99 (distance between corners)
+      expect(result.width, greaterThan(0));
+      expect(result.height, greaterThan(0));
+    });
+
+    test('should handle non-rectangular quadrilateral corners', () {
+      // Create a 200x200 test image with distinct quadrants
+      final image = img.Image(width: 200, height: 200);
+      for (var y = 0; y < 200; y++) {
+        for (var x = 0; x < 200; x++) {
+          image.setPixelRgb(x, y, x % 256, y % 256, 128);
+        }
+      }
+
+      // Trapezoid corners (document photographed at an angle)
+      const corners = DocumentCorners(
+        topLeft: Corner(30, 20),
+        topRight: Corner(170, 10),
+        bottomLeft: Corner(10, 180),
+        bottomRight: Corner(190, 190),
+      );
+
+      final result = PerspectiveService.warpImage(image, corners);
+
+      expect(result.width, greaterThan(0));
+      expect(result.height, greaterThan(0));
+      // The warped image should be roughly rectangular based on corner distances
+      expect(result.width, closeTo(corners.outputWidth, 1.0));
+      expect(result.height, closeTo(corners.outputHeight, 1.0));
+    });
+
+    test('should produce valid pixel data', () {
+      final image = img.Image(width: 50, height: 50);
+      for (var y = 0; y < 50; y++) {
+        for (var x = 0; x < 50; x++) {
+          image.setPixelRgb(x, y, 200, 200, 200);
+        }
+      }
+
+      const corners = DocumentCorners(
+        topLeft: Corner(5, 5),
+        topRight: Corner(45, 5),
+        bottomLeft: Corner(5, 45),
+        bottomRight: Corner(45, 45),
+      );
+
+      final result = PerspectiveService.warpImage(image, corners);
+
+      // All pixels should have valid values
+      for (var y = 0; y < result.height; y++) {
+        for (var x = 0; x < result.width; x++) {
+          final pixel = result.getPixel(x, y);
+          expect(pixel.r.toInt(), inInclusiveRange(0, 255));
+          expect(pixel.g.toInt(), inInclusiveRange(0, 255));
+          expect(pixel.b.toInt(), inInclusiveRange(0, 255));
+        }
+      }
+    });
+  });
+
+  group('PerspectiveService.orderCorners', () {
+    test('should order four arbitrary points into canonical positions', () {
+      // Points in random order that form a rectangle
+      final points = [
+        const Corner(100, 0), // top-right
+        const Corner(0, 100), // bottom-left
+        const Corner(100, 100), // bottom-right
+        const Corner(0, 0), // top-left
+      ];
+
+      final ordered = PerspectiveService.orderCorners(points);
+
+      expect(ordered.topLeft, const Corner(0, 0));
+      expect(ordered.topRight, const Corner(100, 0));
+      expect(ordered.bottomLeft, const Corner(0, 100));
+      expect(ordered.bottomRight, const Corner(100, 100));
+    });
+
+    test('should handle already-ordered points', () {
+      final points = [
+        const Corner(0, 0),
+        const Corner(200, 0),
+        const Corner(0, 300),
+        const Corner(200, 300),
+      ];
+
+      final ordered = PerspectiveService.orderCorners(points);
+
+      expect(ordered.topLeft, const Corner(0, 0));
+      expect(ordered.topRight, const Corner(200, 0));
+      expect(ordered.bottomLeft, const Corner(0, 300));
+      expect(ordered.bottomRight, const Corner(200, 300));
+    });
+
+    test('should throw when given fewer than 4 points', () {
+      expect(
+        () => PerspectiveService.orderCorners([
+          const Corner(0, 0),
+          const Corner(100, 0),
+          const Corner(0, 100),
+        ]),
+        throwsA(isA<PerspectiveException>()),
+      );
+    });
+
+    test('should throw when given more than 4 points', () {
+      expect(
+        () => PerspectiveService.orderCorners([
+          const Corner(0, 0),
+          const Corner(100, 0),
+          const Corner(0, 100),
+          const Corner(100, 100),
+          const Corner(50, 50),
+        ]),
+        throwsA(isA<PerspectiveException>()),
+      );
+    });
+
+    test('should correctly order a trapezoid', () {
+      // Simulating a document photographed at an angle
+      final points = [
+        const Corner(180, 190), // bottom-right
+        const Corner(20, 10), // top-left
+        const Corner(10, 180), // bottom-left
+        const Corner(170, 20), // top-right
+      ];
+
+      final ordered = PerspectiveService.orderCorners(points);
+
+      expect(ordered.topLeft, const Corner(20, 10));
+      expect(ordered.topRight, const Corner(170, 20));
+      expect(ordered.bottomLeft, const Corner(10, 180));
+      expect(ordered.bottomRight, const Corner(180, 190));
+    });
+  });
+
+  group('PerspectiveService.mapCornersToImageResolution', () {
+    test('should scale corners from display to image resolution', () {
+      // Display is 400x600, image is 2000x3000 (5x scale)
+      const displayCorners = DocumentCorners(
+        topLeft: Corner(10, 20),
+        topRight: Corner(390, 20),
+        bottomLeft: Corner(10, 580),
+        bottomRight: Corner(390, 580),
+      );
+
+      final mapped = PerspectiveService.mapCornersToImageResolution(
+        corners: displayCorners,
+        displayWidth: 400,
+        displayHeight: 600,
+        imageWidth: 2000,
+        imageHeight: 3000,
+      );
+
+      expect(mapped.topLeft.x, closeTo(50, 0.01));
+      expect(mapped.topLeft.y, closeTo(100, 0.01));
+      expect(mapped.topRight.x, closeTo(1950, 0.01));
+      expect(mapped.topRight.y, closeTo(100, 0.01));
+      expect(mapped.bottomLeft.x, closeTo(50, 0.01));
+      expect(mapped.bottomLeft.y, closeTo(2900, 0.01));
+      expect(mapped.bottomRight.x, closeTo(1950, 0.01));
+      expect(mapped.bottomRight.y, closeTo(2900, 0.01));
+    });
+
+    test('should return same corners when display matches image size', () {
+      const corners = DocumentCorners(
+        topLeft: Corner(10, 20),
+        topRight: Corner(90, 20),
+        bottomLeft: Corner(10, 80),
+        bottomRight: Corner(90, 80),
+      );
+
+      final mapped = PerspectiveService.mapCornersToImageResolution(
+        corners: corners,
+        displayWidth: 100,
+        displayHeight: 100,
+        imageWidth: 100,
+        imageHeight: 100,
+      );
+
+      expect(mapped.topLeft.x, closeTo(10, 0.01));
+      expect(mapped.topLeft.y, closeTo(20, 0.01));
+    });
+
+    test('should handle non-uniform scaling', () {
+      const corners = DocumentCorners(
+        topLeft: Corner(10, 10),
+        topRight: Corner(90, 10),
+        bottomLeft: Corner(10, 90),
+        bottomRight: Corner(90, 90),
+      );
+
+      // Display 100x100, image 200x400 (2x horizontal, 4x vertical)
+      final mapped = PerspectiveService.mapCornersToImageResolution(
+        corners: corners,
+        displayWidth: 100,
+        displayHeight: 100,
+        imageWidth: 200,
+        imageHeight: 400,
+      );
+
+      expect(mapped.topLeft.x, closeTo(20, 0.01));
+      expect(mapped.topLeft.y, closeTo(40, 0.01));
+      expect(mapped.bottomRight.x, closeTo(180, 0.01));
+      expect(mapped.bottomRight.y, closeTo(360, 0.01));
+    });
+  });
+
+  group('PerspectiveException', () {
+    test('should format message correctly', () {
+      const exception = PerspectiveException('warp failed');
+      expect(exception.toString(), 'PerspectiveException: warp failed');
+      expect(exception.message, 'warp failed');
     });
   });
 }

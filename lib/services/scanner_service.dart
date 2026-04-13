@@ -9,6 +9,8 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
+import 'perspective_service.dart';
+
 /// Top-level function for running image enhancement in a background isolate.
 ///
 /// Takes raw image bytes, decodes them, applies adaptive thresholding, and
@@ -28,8 +30,15 @@ Uint8List _enhanceImageIsolate(Uint8List imageBytes) {
 /// Uses the device's native document scanner for edge detection and
 /// perspective correction, then applies image enhancement filters
 /// before running on-device OCR via ML Kit (bundled model).
+///
+/// When document corners are provided, a [PerspectiveService] step is
+/// applied AFTER scanning but BEFORE image enhancement and OCR, ensuring
+/// the OCR engine works on a perfectly rectangular top-down image.
 class ScannerService {
   static const _uuid = Uuid();
+
+  /// Service for perspective transformation (image warping).
+  final PerspectiveService _perspectiveService = PerspectiveService();
 
   /// The ML Kit text recognizer configured for Latin script.
   ///
@@ -201,21 +210,40 @@ class ScannerService {
     }
   }
 
-  /// Processes a list of scanned images: enhances each, then runs OCR.
+  /// Processes a list of scanned images: optionally warps perspective,
+  /// enhances each, then runs OCR.
+  ///
+  /// If [corners] is provided, a perspective warp is applied to each image
+  /// BEFORE enhancement and OCR. Each entry in [corners] corresponds to
+  /// the image at the same index in [imagePaths]. A `null` entry means
+  /// no perspective correction for that page.
   ///
   /// Returns a [ProcessedScan] containing the enhanced image paths and
   /// the combined OCR text from all pages.
-  Future<ProcessedScan> processImages(List<String> imagePaths) async {
+  Future<ProcessedScan> processImages(
+    List<String> imagePaths, {
+    List<DocumentCorners?>? corners,
+  }) async {
     final enhancedPaths = <String>[];
     final allTextBlocks = <List<OcrTextBlock>>[];
     final allText = StringBuffer();
 
-    for (final path in imagePaths) {
-      // Enhance the image for OCR
-      final enhancedPath = await enhanceImage(path);
+    for (var i = 0; i < imagePaths.length; i++) {
+      var currentPath = imagePaths[i];
+
+      // Step 1: Apply perspective warp if corners are provided for this page
+      if (corners != null && i < corners.length && corners[i] != null) {
+        currentPath = await _perspectiveService.warpImageFile(
+          currentPath,
+          corners[i]!,
+        );
+      }
+
+      // Step 2: Enhance the image for OCR
+      final enhancedPath = await enhanceImage(currentPath);
       enhancedPaths.add(enhancedPath);
 
-      // Run OCR on the enhanced image
+      // Step 3: Run OCR on the enhanced image
       final textBlocks = await recognizeTextBlocks(enhancedPath);
       allTextBlocks.add(textBlocks);
 

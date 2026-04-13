@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.flux_scan"
+    namespace = "de.fluxscan.app"
     compileSdk = 34
 
     sourceSets {
@@ -13,7 +13,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.flux_scan"
+        applicationId = "de.fluxscan.app"
         minSdk = 21
         targetSdk = 34
         versionCode = flutter.versionCode

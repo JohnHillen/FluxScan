@@ -1,4 +1,4 @@
-package com.fluxscan.app
+package de.fluxscan.app
 
 import io.flutter.embedding.android.FlutterActivity
 

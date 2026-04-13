@@ -91,8 +91,15 @@ class _ScanResultScreenState extends State<ScanResultScreen>
       return;
     }
 
+    // Use the document title as the shared filename so the recipient
+    // sees a meaningful name instead of the internal UUID-based path.
+    final sanitizedTitle =
+        _document.title.replaceAll(RegExp(r'[^\w\s\-.]'), '').trim();
+    final fileName =
+        sanitizedTitle.isEmpty ? 'document.pdf' : '$sanitizedTitle.pdf';
+
     await Share.shareXFiles(
-      [XFile(_document.pdfPath!)],
+      [XFile(_document.pdfPath!, name: fileName)],
       subject: _document.title,
     );
   }

@@ -107,37 +107,38 @@ class PdfService {
                 pw.Positioned.fill(
                   child: pw.Image(image, fit: pw.BoxFit.contain),
                 ),
-                // Invisible OCR text overlay for searchability
-                ...pageBlocks.map((block) {
-                  // Estimate per-line font size: divide block height by the
-                  // number of text lines so the overlay text fits the box
-                  // rather than overflowing with a single oversized font.
-                  // Note: this counts explicit newlines only; actual rendered
-                  // lines may differ if text wraps within the block width.
-                  // The clamp keeps the result in a safe range regardless.
-                  final lineCount =
-                      '\n'.allMatches(block.text).length + 1;
-                  final lineHeight =
-                      block.height * uniformScale / lineCount;
-                  final fontSize = (lineHeight * 0.8).clamp(1.0, 12.0);
+                // Invisible OCR text overlay for searchability.
+                // Uses element-level (word) bounding boxes with FittedBox
+                // stretching to ensure text highlight positions match exactly.
+                ...pageBlocks.expand((block) {
+                  return block.lines.expand((line) {
+                    return line.elements.map((element) {
+                      final mappedLeft =
+                          element.left * uniformScale + offsetX;
+                      final mappedTop =
+                          element.top * uniformScale + offsetY;
+                      final mappedWidth = element.width * uniformScale;
+                      final mappedHeight = element.height * uniformScale;
 
-                  return pw.Positioned(
-                    left: block.left * uniformScale + offsetX,
-                    top: block.top * uniformScale + offsetY,
-                    child: pw.SizedBox(
-                      width: block.width * uniformScale,
-                      height: block.height * uniformScale,
-                      child: pw.Opacity(
-                        opacity: 0,
-                        child: pw.Text(
-                          block.text,
-                          style: pw.TextStyle(
-                            fontSize: fontSize,
+                      return pw.Positioned(
+                        left: mappedLeft,
+                        top: mappedTop,
+                        child: pw.SizedBox(
+                          width: mappedWidth,
+                          height: mappedHeight,
+                          child: pw.FittedBox(
+                            fit: pw.BoxFit.fill,
+                            child: pw.Text(
+                              element.text,
+                              style: const pw.TextStyle(
+                                color: PdfColors.transparent,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  );
+                      );
+                    });
+                  });
                 }),
               ],
             );

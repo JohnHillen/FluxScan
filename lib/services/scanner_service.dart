@@ -224,6 +224,7 @@ class ScannerService {
     List<String> imagePaths, {
     List<DocumentCorners?>? corners,
   }) async {
+    final originalPaths = <String>[];
     final enhancedPaths = <String>[];
     final allTextBlocks = <List<OcrTextBlock>>[];
     final allText = StringBuffer();
@@ -238,6 +239,9 @@ class ScannerService {
           corners[i]!,
         );
       }
+
+      // Keep the original (post-warp, pre-enhance) path for display / PDF
+      originalPaths.add(currentPath);
 
       // Step 2: Enhance the image for OCR
       final enhancedPath = await enhanceImage(currentPath);
@@ -255,6 +259,7 @@ class ScannerService {
     }
 
     return ProcessedScan(
+      originalImagePaths: originalPaths,
       enhancedImagePaths: enhancedPaths,
       textBlocks: allTextBlocks,
       combinedText: allText.toString(),
@@ -286,6 +291,12 @@ class OcrTextBlock {
 
 /// Result of processing scanned images through enhancement and OCR.
 class ProcessedScan {
+  /// Original (pre-enhancement) image file paths (one per page).
+  ///
+  /// These retain the full colour information of the scan and are used
+  /// for display in the app and as the visual layer in the exported PDF.
+  final List<String> originalImagePaths;
+
   /// Enhanced image file paths (one per page).
   final List<String> enhancedImagePaths;
 
@@ -296,6 +307,7 @@ class ProcessedScan {
   final String combinedText;
 
   const ProcessedScan({
+    required this.originalImagePaths,
     required this.enhancedImagePaths,
     required this.textBlocks,
     required this.combinedText,

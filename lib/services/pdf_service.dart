@@ -109,19 +109,28 @@ class PdfService {
                 ),
                 // Invisible OCR text overlay for searchability
                 ...pageBlocks.map((block) {
+                  // Estimate per-line font size: divide block height by the
+                  // number of text lines so the overlay text fits the box
+                  // rather than overflowing with a single oversized font.
+                  final lineCount =
+                      '\n'.allMatches(block.text).length + 1;
+                  final lineHeight =
+                      block.height * uniformScale / lineCount;
+                  final fontSize = (lineHeight * 0.8).clamp(1.0, 12.0);
+
                   return pw.Positioned(
                     left: block.left * uniformScale + offsetX,
                     top: block.top * uniformScale + offsetY,
                     child: pw.SizedBox(
                       width: block.width * uniformScale,
                       height: block.height * uniformScale,
-                      child: pw.Text(
-                        block.text,
-                        style: pw.TextStyle(
-                          // Transparent text: invisible but searchable
-                          color: PdfColor.fromInt(0x00000000),
-                          fontSize: (block.height * uniformScale * 0.8)
-                              .clamp(4.0, 20.0),
+                      child: pw.Opacity(
+                        opacity: 0,
+                        child: pw.Text(
+                          block.text,
+                          style: pw.TextStyle(
+                            fontSize: fontSize,
+                          ),
                         ),
                       ),
                     ),

@@ -78,8 +78,8 @@ class PdfService {
       // Use A4 page format
       const pageFormat = PdfPageFormat.a4;
 
-      // Compute the uniform scale factor matching BoxFit.contain behaviour.
-      // The image is scaled uniformly to fit inside the page and centred,
+      // Compute the uniform scale factor matching BoxFit.contain behavior.
+      // The image is scaled uniformly to fit inside the page and centered,
       // so we must apply the same single scale factor and centering offset
       // to map OCR bounding boxes from image-pixel space to PDF-point space.
       final mapping = computePageMapping(

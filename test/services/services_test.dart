@@ -68,8 +68,7 @@ void main() {
       expect(result.offsetY, greaterThan(0));
     });
 
-    test('should return scale 1.0 and zero offset when dimensions are zero',
-        () {
+    test('should return scale 1.0 when image dimensions are zero', () {
       final result = PdfService.computePageMapping(
         imageWidth: 0,
         imageHeight: 0,
@@ -78,6 +77,8 @@ void main() {
       );
 
       expect(result.scale, 1.0);
+      // With zero-dimension images the centering formula yields half-page
+      // offsets; this is a degenerate case but mathematically consistent.
       expect(result.offsetX, closeTo(595.28 / 2, 0.001));
       expect(result.offsetY, closeTo(841.89 / 2, 0.001));
     });

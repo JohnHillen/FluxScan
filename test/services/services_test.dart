@@ -240,6 +240,24 @@ void main() {
     });
   });
 
+  group('OcrSymbol', () {
+    test('should hold text and bounding box coordinates', () {
+      const symbol = OcrSymbol(
+        text: 'H',
+        left: 10.0,
+        top: 20.0,
+        width: 8.0,
+        height: 15.0,
+      );
+
+      expect(symbol.text, 'H');
+      expect(symbol.left, 10.0);
+      expect(symbol.top, 20.0);
+      expect(symbol.width, 8.0);
+      expect(symbol.height, 15.0);
+    });
+  });
+
   group('OcrTextElement', () {
     test('should hold text and bounding box coordinates', () {
       const element = OcrTextElement(
@@ -255,6 +273,40 @@ void main() {
       expect(element.top, 20.0);
       expect(element.width, 50.0);
       expect(element.height, 15.0);
+      expect(element.symbols, isEmpty);
+    });
+
+    test('should hold symbols when provided', () {
+      const element = OcrTextElement(
+        text: 'Hi',
+        left: 10.0,
+        top: 20.0,
+        width: 20.0,
+        height: 15.0,
+        symbols: [
+          OcrSymbol(
+            text: 'H',
+            left: 10.0,
+            top: 20.0,
+            width: 10.0,
+            height: 15.0,
+          ),
+          OcrSymbol(
+            text: 'i',
+            left: 20.0,
+            top: 20.0,
+            width: 10.0,
+            height: 15.0,
+          ),
+        ],
+      );
+
+      expect(element.text, 'Hi');
+      expect(element.symbols.length, 2);
+      expect(element.symbols[0].text, 'H');
+      expect(element.symbols[1].text, 'i');
+      expect(element.symbols[0].left, 10.0);
+      expect(element.symbols[1].left, 20.0);
     });
   });
 

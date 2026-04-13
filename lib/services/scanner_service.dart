@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:cunning_document_scanner/cunning_document_scanner.dart';
@@ -39,10 +40,89 @@ class ScannerService {
     }
   }
 
+  /// Applies adaptive thresholding to produce a high-contrast black and white
+  /// image with shadows removed.
+  ///
+  /// Uses a mean-based adaptive threshold computed over a local
+  /// [blockSize]×[blockSize] neighborhood. A pixel is set to white if its
+  /// intensity exceeds the local mean minus [constant]; otherwise it is set
+  /// to black. This removes uneven lighting and shadows common in phone
+  /// camera scans.
+  ///
+  /// An integral image (summed area table) is used internally so the
+  /// block-mean lookup for every pixel runs in constant time, keeping the
+  /// overall complexity at O(width × height).
+  ///
+  /// [image] - The source image (converted to grayscale internally).
+  /// [blockSize] - Side length of the local neighborhood (must be odd, ≥ 3).
+  ///   Defaults to 15.
+  /// [constant] - Value subtracted from the local mean before comparison.
+  ///   Higher values preserve more detail but may retain noise. Defaults to 10.
+  static img.Image adaptiveThreshold(
+    img.Image image, {
+    int blockSize = 15,
+    int constant = 10,
+  }) {
+    // Ensure blockSize is odd and at least 3
+    blockSize = math.max(blockSize, 3);
+    if (blockSize.isEven) blockSize += 1;
+
+    final grayscale = img.grayscale(img.Image.from(image));
+    final width = grayscale.width;
+    final height = grayscale.height;
+
+    // Build integral image (summed area table) for O(1) block mean queries.
+    // integral[y+1][x+1] = sum of all pixel intensities in (0..x, 0..y).
+    final integral = List<List<int>>.generate(
+      height + 1,
+      (_) => List<int>.filled(width + 1, 0),
+    );
+
+    for (var y = 0; y < height; y++) {
+      var rowSum = 0;
+      for (var x = 0; x < width; x++) {
+        rowSum += grayscale.getPixel(x, y).r.toInt();
+        integral[y + 1][x + 1] = integral[y][x + 1] + rowSum;
+      }
+    }
+
+    // Apply adaptive threshold using the integral image.
+    final output = img.Image(width: width, height: height);
+    final halfBlock = blockSize ~/ 2;
+
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        // Clamp block boundaries to image edges
+        final x1 = math.max(x - halfBlock, 0);
+        final y1 = math.max(y - halfBlock, 0);
+        final x2 = math.min(x + halfBlock, width - 1);
+        final y2 = math.min(y + halfBlock, height - 1);
+
+        final count = (x2 - x1 + 1) * (y2 - y1 + 1);
+
+        // Summed area table lookup for the rectangle (x1..x2, y1..y2)
+        final sum = integral[y2 + 1][x2 + 1]
+            - integral[y1][x2 + 1]
+            - integral[y2 + 1][x1]
+            + integral[y1][x1];
+
+        final mean = sum ~/ count;
+        final intensity = grayscale.getPixel(x, y).r.toInt();
+
+        // Pixel is foreground (black) if below local mean minus constant
+        final value = intensity < (mean - constant) ? 0 : 255;
+        output.setPixelRgb(x, y, value, value, value);
+      }
+    }
+
+    return output;
+  }
+
   /// Enhances a scanned image for better OCR accuracy.
   ///
-  /// Applies grayscale conversion and contrast adjustment to improve
-  /// text readability. The enhanced image is saved to a new file.
+  /// Applies adaptive thresholding to remove shadows and convert the scan
+  /// to a high-contrast black and white image, improving text readability
+  /// for the OCR engine. The enhanced image is saved to a new file.
   ///
   /// Returns the file path to the enhanced image.
   Future<String> enhanceImage(String imagePath) async {
@@ -53,11 +133,8 @@ class ScannerService {
         throw ScannerException('Failed to decode image: $imagePath');
       }
 
-      // Convert to grayscale for better OCR results
-      final grayscale = img.grayscale(original);
-
-      // Adjust contrast to make text stand out
-      final enhanced = img.adjustColor(grayscale, contrast: 1.3);
+      // Apply adaptive thresholding for shadow removal and B&W conversion
+      final enhanced = adaptiveThreshold(original);
 
       // Save the enhanced image
       final dir = await getApplicationDocumentsDirectory();

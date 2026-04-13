@@ -5,11 +5,12 @@ import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/scan_document.dart';
+import '../services/storage_service.dart';
 
 /// Screen for viewing the details of a scanned document.
 ///
 /// Displays page images, extracted OCR text, and provides options
-/// to share or print the generated PDF.
+/// to rename, share or print the generated PDF.
 class ScanResultScreen extends StatefulWidget {
   final ScanDocument document;
 
@@ -22,11 +23,14 @@ class ScanResultScreen extends StatefulWidget {
 class _ScanResultScreenState extends State<ScanResultScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
+  final StorageService _storageService = StorageService();
+  late ScanDocument _document;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _document = widget.document;
   }
 
   @override
@@ -35,31 +39,71 @@ class _ScanResultScreenState extends State<ScanResultScreen>
     super.dispose();
   }
 
+  Future<void> _renameDocument() async {
+    final controller = TextEditingController(text: _document.title);
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Document'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Document name',
+          ),
+          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+
+    if (newTitle != null && newTitle.isNotEmpty && newTitle != _document.title) {
+      final updated = _document.copyWith(
+        title: newTitle,
+        updatedAt: DateTime.now(),
+      );
+      await _storageService.saveDocument(updated);
+      if (mounted) {
+        setState(() => _document = updated);
+      }
+    }
+  }
+
   Future<void> _sharePdf() async {
-    if (widget.document.pdfPath == null) {
+    if (_document.pdfPath == null) {
       _showError('No PDF available.');
       return;
     }
 
-    final file = File(widget.document.pdfPath!);
+    final file = File(_document.pdfPath!);
     if (!await file.exists()) {
       _showError('PDF file not found.');
       return;
     }
 
     await Share.shareXFiles(
-      [XFile(widget.document.pdfPath!)],
-      subject: widget.document.title,
+      [XFile(_document.pdfPath!)],
+      subject: _document.title,
     );
   }
 
   Future<void> _printPdf() async {
-    if (widget.document.pdfPath == null) {
+    if (_document.pdfPath == null) {
       _showError('No PDF available.');
       return;
     }
 
-    final file = File(widget.document.pdfPath!);
+    final file = File(_document.pdfPath!);
     if (!await file.exists()) {
       _showError('PDF file not found.');
       return;
@@ -83,8 +127,13 @@ class _ScanResultScreenState extends State<ScanResultScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.document.title),
+        title: Text(_document.title),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.edit),
+            tooltip: 'Rename',
+            onPressed: _renameDocument,
+          ),
           IconButton(
             icon: const Icon(Icons.share),
             tooltip: 'Share PDF',
@@ -115,14 +164,14 @@ class _ScanResultScreenState extends State<ScanResultScreen>
   }
 
   Widget _buildPagesView() {
-    if (widget.document.imagePaths.isEmpty) {
+    if (_document.imagePaths.isEmpty) {
       return const Center(child: Text('No pages available.'));
     }
 
     return PageView.builder(
-      itemCount: widget.document.imagePaths.length,
+      itemCount: _document.imagePaths.length,
       itemBuilder: (context, index) {
-        final imagePath = widget.document.imagePaths[index];
+        final imagePath = _document.imagePaths[index];
         return InteractiveViewer(
           minScale: 0.5,
           maxScale: 4.0,
@@ -146,7 +195,7 @@ class _ScanResultScreenState extends State<ScanResultScreen>
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Page ${index + 1} of ${widget.document.pageCount}',
+                    'Page ${index + 1} of ${_document.pageCount}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -159,7 +208,7 @@ class _ScanResultScreenState extends State<ScanResultScreen>
   }
 
   Widget _buildTextView() {
-    if (widget.document.ocrText.isEmpty) {
+    if (_document.ocrText.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -179,7 +228,7 @@ class _ScanResultScreenState extends State<ScanResultScreen>
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: SelectableText(
-        widget.document.ocrText,
+        _document.ocrText,
         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
               fontFamily: 'monospace',
               height: 1.5,

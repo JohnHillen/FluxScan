@@ -81,21 +81,21 @@ class _HomeScreenState extends State<HomeScreen> {
       // Step 2: Enhance images and run OCR
       final processed = await _scannerService.processImages(imagePaths);
 
-      // Step 3: Generate searchable PDF
+      // Step 3: Generate searchable PDF (use original images for the visual layer)
       final timestamp = DateFormat('yyyy-MM-dd_HH-mm-ss').format(DateTime.now());
       final title = 'Scan $timestamp';
 
       final pdfPath = await _pdfService.generateSearchablePdf(
-        imagePaths: processed.enhancedImagePaths,
+        imagePaths: processed.originalImagePaths,
         textBlocks: processed.textBlocks,
         title: title,
       );
 
-      // Step 4: Save the document
+      // Step 4: Save the document (use original images for display)
       final document = ScanDocument(
         id: const Uuid().v4(),
         title: title,
-        imagePaths: processed.enhancedImagePaths,
+        imagePaths: processed.originalImagePaths,
         ocrText: processed.combinedText,
         pdfPath: pdfPath,
         createdAt: DateTime.now(),

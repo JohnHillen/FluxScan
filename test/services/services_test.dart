@@ -261,6 +261,7 @@ void main() {
   group('ProcessedScan', () {
     test('should hold processed scan data', () {
       const scan = ProcessedScan(
+        originalImagePaths: ['/original1.png', '/original2.png'],
         enhancedImagePaths: ['/enhanced1.png', '/enhanced2.png'],
         textBlocks: [
           [
@@ -285,6 +286,7 @@ void main() {
         combinedText: 'Page 1 text\n\n--- Page Break ---\n\nPage 2 text',
       );
 
+      expect(scan.originalImagePaths.length, 2);
       expect(scan.enhancedImagePaths.length, 2);
       expect(scan.textBlocks.length, 2);
       expect(scan.combinedText, contains('Page 1 text'));

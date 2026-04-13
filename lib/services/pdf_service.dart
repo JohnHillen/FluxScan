@@ -131,7 +131,7 @@ class PdfService {
                             child: pw.Text(
                               element.text,
                               style: const pw.TextStyle(
-                                color: PdfColors.transparent,
+                                color: PdfColor(0, 0, 0, 0),
                               ),
                             ),
                           ),

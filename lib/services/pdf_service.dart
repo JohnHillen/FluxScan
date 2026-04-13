@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -15,6 +16,29 @@ import 'scanner_service.dart';
 /// fully text-searchable and copy-pasteable.
 class PdfService {
   static const _uuid = Uuid();
+
+  /// Computes the uniform scale factor and centering offsets used to map
+  /// OCR bounding-box coordinates from image-pixel space to PDF-point space.
+  ///
+  /// This mirrors the layout produced by [pw.BoxFit.contain]: the image is
+  /// scaled uniformly to fit entirely within the page, and any remaining
+  /// space is split equally on both sides (centering).
+  ///
+  /// Returns a record of `(uniformScale, offsetX, offsetY)`.
+  static ({double scale, double offsetX, double offsetY})
+      computePageMapping({
+    required double imageWidth,
+    required double imageHeight,
+    required double pageWidth,
+    required double pageHeight,
+  }) {
+    final scale = (imageWidth > 0 && imageHeight > 0)
+        ? math.min(pageWidth / imageWidth, pageHeight / imageHeight)
+        : 1.0;
+    final offsetX = (pageWidth - imageWidth * scale) / 2;
+    final offsetY = (pageHeight - imageHeight * scale) / 2;
+    return (scale: scale, offsetX: offsetX, offsetY: offsetY);
+  }
 
   /// Generates a searchable PDF from scanned images and their OCR text blocks.
   ///
@@ -54,6 +78,20 @@ class PdfService {
       // Use A4 page format
       const pageFormat = PdfPageFormat.a4;
 
+      // Compute the uniform scale factor matching BoxFit.contain behaviour.
+      // The image is scaled uniformly to fit inside the page and centred,
+      // so we must apply the same single scale factor and centering offset
+      // to map OCR bounding boxes from image-pixel space to PDF-point space.
+      final mapping = computePageMapping(
+        imageWidth: imgWidth,
+        imageHeight: imgHeight,
+        pageWidth: pageFormat.width,
+        pageHeight: pageFormat.height,
+      );
+      final uniformScale = mapping.scale;
+      final offsetX = mapping.offsetX;
+      final offsetY = mapping.offsetY;
+
       // Get the page's OCR blocks (or empty if no blocks for this page)
       final pageBlocks =
           i < textBlocks.length ? textBlocks[i] : <OcrTextBlock>[];
@@ -71,25 +109,17 @@ class PdfService {
                 ),
                 // Invisible OCR text overlay for searchability
                 ...pageBlocks.map((block) {
-                  // Scale block coordinates from image space to page space
-                  final scaleX = imgWidth > 0
-                      ? pageFormat.width / imgWidth
-                      : 1.0;
-                  final scaleY = imgHeight > 0
-                      ? pageFormat.height / imgHeight
-                      : 1.0;
-
                   return pw.Positioned(
-                    left: block.left * scaleX,
-                    top: block.top * scaleY,
-                    width: block.width * scaleX,
-                    height: block.height * scaleY,
+                    left: block.left * uniformScale + offsetX,
+                    top: block.top * uniformScale + offsetY,
+                    width: block.width * uniformScale,
+                    height: block.height * uniformScale,
                     child: pw.Text(
                       block.text,
                       style: pw.TextStyle(
                         // Transparent text: invisible but searchable
                         color: PdfColor.fromInt(0x00000000),
-                        fontSize: (block.height * scaleY * 0.8)
+                        fontSize: (block.height * uniformScale * 0.8)
                             .clamp(4.0, 20.0),
                       ),
                     ),

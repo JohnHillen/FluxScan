@@ -9,6 +9,7 @@ import '../models/scan_document.dart';
 import '../services/pdf_service.dart';
 import '../services/scanner_service.dart';
 import '../services/storage_service.dart';
+import '../utils/filename_utils.dart';
 import '../widgets/scan_card.dart';
 import 'scan_result_screen.dart';
 import 'settings_screen.dart';
@@ -173,10 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Use the document title as the shared filename so the recipient
     // sees a meaningful name instead of the internal UUID-based path.
-    final sanitizedTitle =
-        document.title.replaceAll(RegExp(r'[^\w\s\-.]'), '').trim();
-    final fileName =
-        sanitizedTitle.isEmpty ? 'document.pdf' : '$sanitizedTitle.pdf';
+    final fileName = sanitizedPdfFilename(document.title);
 
     await Share.shareXFiles(
       [XFile(document.pdfPath!, name: fileName)],

@@ -240,6 +240,53 @@ void main() {
     });
   });
 
+  group('OcrTextElement', () {
+    test('should hold text and bounding box coordinates', () {
+      const element = OcrTextElement(
+        text: 'Hello',
+        left: 10.0,
+        top: 20.0,
+        width: 50.0,
+        height: 15.0,
+      );
+
+      expect(element.text, 'Hello');
+      expect(element.left, 10.0);
+      expect(element.top, 20.0);
+      expect(element.width, 50.0);
+      expect(element.height, 15.0);
+    });
+  });
+
+  group('OcrTextLine', () {
+    test('should hold text and elements', () {
+      const line = OcrTextLine(
+        text: 'Hello World',
+        elements: [
+          OcrTextElement(
+            text: 'Hello',
+            left: 10.0,
+            top: 20.0,
+            width: 50.0,
+            height: 15.0,
+          ),
+          OcrTextElement(
+            text: 'World',
+            left: 65.0,
+            top: 20.0,
+            width: 55.0,
+            height: 15.0,
+          ),
+        ],
+      );
+
+      expect(line.text, 'Hello World');
+      expect(line.elements.length, 2);
+      expect(line.elements[0].text, 'Hello');
+      expect(line.elements[1].text, 'World');
+    });
+  });
+
   group('OcrTextBlock', () {
     test('should hold text and bounding box coordinates', () {
       const block = OcrTextBlock(
@@ -255,6 +302,43 @@ void main() {
       expect(block.top, 20.0);
       expect(block.width, 200.0);
       expect(block.height, 30.0);
+      expect(block.lines, isEmpty);
+    });
+
+    test('should hold lines with elements', () {
+      const block = OcrTextBlock(
+        text: 'Hello World',
+        left: 10.0,
+        top: 20.0,
+        width: 200.0,
+        height: 30.0,
+        lines: [
+          OcrTextLine(
+            text: 'Hello World',
+            elements: [
+              OcrTextElement(
+                text: 'Hello',
+                left: 10.0,
+                top: 20.0,
+                width: 50.0,
+                height: 15.0,
+              ),
+              OcrTextElement(
+                text: 'World',
+                left: 65.0,
+                top: 20.0,
+                width: 55.0,
+                height: 15.0,
+              ),
+            ],
+          ),
+        ],
+      );
+
+      expect(block.lines.length, 1);
+      expect(block.lines[0].elements.length, 2);
+      expect(block.lines[0].elements[0].text, 'Hello');
+      expect(block.lines[0].elements[1].text, 'World');
     });
   });
 

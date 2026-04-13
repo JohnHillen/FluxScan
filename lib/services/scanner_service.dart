@@ -191,18 +191,38 @@ class ScannerService {
   ///
   /// Each block contains the recognized text and its bounding box
   /// relative to the original image, used for creating searchable PDFs.
+  /// Blocks include line-level and element-level (word) data with
+  /// individual bounding boxes for precise PDF text overlay alignment.
   Future<List<OcrTextBlock>> recognizeTextBlocks(String imagePath) async {
     try {
       final inputImage = InputImage.fromFilePath(imagePath);
       final recognized = await _textRecognizer.processImage(inputImage);
 
       return recognized.blocks.map((block) {
+        final lines = block.lines.map((line) {
+          final elements = line.elements.map((element) {
+            return OcrTextElement(
+              text: element.text,
+              left: element.boundingBox.left,
+              top: element.boundingBox.top,
+              width: element.boundingBox.width,
+              height: element.boundingBox.height,
+            );
+          }).toList();
+
+          return OcrTextLine(
+            text: line.text,
+            elements: elements,
+          );
+        }).toList();
+
         return OcrTextBlock(
           text: block.text,
           left: block.boundingBox.left,
           top: block.boundingBox.top,
           width: block.boundingBox.width,
           height: block.boundingBox.height,
+          lines: lines,
         );
       }).toList();
     } catch (e) {
@@ -272,13 +292,43 @@ class ScannerService {
   }
 }
 
-/// Holds a single OCR text block with its bounding box coordinates.
+/// Holds a single OCR text element (word) with its bounding box coordinates.
+class OcrTextElement {
+  final String text;
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+
+  const OcrTextElement({
+    required this.text,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+  });
+}
+
+/// Holds a single OCR text line with its elements (words).
+class OcrTextLine {
+  final String text;
+  final List<OcrTextElement> elements;
+
+  const OcrTextLine({
+    required this.text,
+    required this.elements,
+  });
+}
+
+/// Holds a single OCR text block with its bounding box coordinates
+/// and structured line/element data for precise PDF text overlay.
 class OcrTextBlock {
   final String text;
   final double left;
   final double top;
   final double width;
   final double height;
+  final List<OcrTextLine> lines;
 
   const OcrTextBlock({
     required this.text,
@@ -286,6 +336,7 @@ class OcrTextBlock {
     required this.top,
     required this.width,
     required this.height,
+    this.lines = const [],
   });
 }
 

@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/scan_document.dart';
 import '../services/storage_service.dart';
+import '../utils/filename_utils.dart';
 
 /// Screen for viewing the details of a scanned document.
 ///
@@ -91,8 +92,12 @@ class _ScanResultScreenState extends State<ScanResultScreen>
       return;
     }
 
+    // Use the document title as the shared filename so the recipient
+    // sees a meaningful name instead of the internal UUID-based path.
+    final fileName = sanitizedPdfFilename(_document.title);
+
     await Share.shareXFiles(
-      [XFile(_document.pdfPath!)],
+      [XFile(_document.pdfPath!, name: fileName)],
       subject: _document.title,
     );
   }

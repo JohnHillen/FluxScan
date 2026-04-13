@@ -201,12 +201,23 @@ class ScannerService {
       return recognized.blocks.map((block) {
         final lines = block.lines.map((line) {
           final elements = line.elements.map((element) {
+            final symbols = element.symbols.map((symbol) {
+              return OcrSymbol(
+                text: symbol.text,
+                left: symbol.boundingBox.left,
+                top: symbol.boundingBox.top,
+                width: symbol.boundingBox.width,
+                height: symbol.boundingBox.height,
+              );
+            }).toList();
+
             return OcrTextElement(
               text: element.text,
               left: element.boundingBox.left,
               top: element.boundingBox.top,
               width: element.boundingBox.width,
               height: element.boundingBox.height,
+              symbols: symbols,
             );
           }).toList();
 
@@ -292,6 +303,23 @@ class ScannerService {
   }
 }
 
+/// Holds a single OCR symbol (character) with its bounding box coordinates.
+class OcrSymbol {
+  final String text;
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+
+  const OcrSymbol({
+    required this.text,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+  });
+}
+
 /// Holds a single OCR text element (word) with its bounding box coordinates.
 class OcrTextElement {
   final String text;
@@ -299,6 +327,7 @@ class OcrTextElement {
   final double top;
   final double width;
   final double height;
+  final List<OcrSymbol> symbols;
 
   const OcrTextElement({
     required this.text,
@@ -306,6 +335,7 @@ class OcrTextElement {
     required this.top,
     required this.width,
     required this.height,
+    this.symbols = const [],
   });
 }
 

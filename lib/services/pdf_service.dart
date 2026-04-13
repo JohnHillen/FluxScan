@@ -108,35 +108,76 @@ class PdfService {
                   child: pw.Image(image, fit: pw.BoxFit.contain),
                 ),
                 // Invisible OCR text overlay for searchability.
-                // Uses element-level (word) bounding boxes with FittedBox
-                // stretching to ensure text highlight positions match exactly.
+                // Iterates through blocks → lines → elements → symbols.
+                // When symbols are available, each character is rendered
+                // individually for precise positioning. Falls back to
+                // element-level (word) rendering when symbols are absent.
                 ...pageBlocks.expand((block) {
                   return block.lines.expand((line) {
-                    return line.elements.map((element) {
-                      final mappedLeft =
-                          element.left * uniformScale + offsetX;
-                      final mappedTop =
-                          element.top * uniformScale + offsetY;
-                      final mappedWidth = element.width * uniformScale;
-                      final mappedHeight = element.height * uniformScale;
+                    return line.elements.expand((element) {
+                      if (element.symbols.isNotEmpty) {
+                        // Symbol-level rendering: each character in its
+                        // own SizedBox / FittedBox for maximum precision.
+                        return element.symbols.map((symbol) {
+                          final mappedLeft =
+                              symbol.left * uniformScale + offsetX;
+                          final mappedTop =
+                              symbol.top * uniformScale + offsetY;
+                          final mappedWidth =
+                              symbol.width * uniformScale;
+                          final mappedHeight =
+                              symbol.height * uniformScale;
 
-                      return pw.Positioned(
-                        left: mappedLeft,
-                        top: mappedTop,
-                        child: pw.SizedBox(
-                          width: mappedWidth,
-                          height: mappedHeight,
-                          child: pw.FittedBox(
-                            fit: pw.BoxFit.fill,
-                            child: pw.Text(
-                              element.text,
-                              style: const pw.TextStyle(
-                                color: PdfColor(0, 0, 0, 0),
+                          return pw.Positioned(
+                            left: mappedLeft,
+                            top: mappedTop,
+                            child: pw.SizedBox(
+                              width: mappedWidth,
+                              height: mappedHeight,
+                              child: pw.FittedBox(
+                                fit: pw.BoxFit.fill,
+                                child: pw.Text(
+                                  symbol.text,
+                                  style: const pw.TextStyle(
+                                    color: PdfColor(0, 0, 0, 0),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        });
+                      } else {
+                        // Fallback: render the entire element text using
+                        // the element-level bounding box.
+                        final mappedLeft =
+                            element.left * uniformScale + offsetX;
+                        final mappedTop =
+                            element.top * uniformScale + offsetY;
+                        final mappedWidth =
+                            element.width * uniformScale;
+                        final mappedHeight =
+                            element.height * uniformScale;
+
+                        return [
+                          pw.Positioned(
+                            left: mappedLeft,
+                            top: mappedTop,
+                            child: pw.SizedBox(
+                              width: mappedWidth,
+                              height: mappedHeight,
+                              child: pw.FittedBox(
+                                fit: pw.BoxFit.fill,
+                                child: pw.Text(
+                                  element.text,
+                                  style: const pw.TextStyle(
+                                    color: PdfColor(0, 0, 0, 0),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      );
+                        ];
+                      }
                     });
                   });
                 }),

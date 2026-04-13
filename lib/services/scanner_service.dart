@@ -3,10 +3,25 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:cunning_document_scanner/cunning_document_scanner.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
+
+/// Top-level function for running image enhancement in a background isolate.
+///
+/// Takes raw image bytes, decodes them, applies adaptive thresholding, and
+/// returns the enhanced image as PNG-encoded bytes. Must be a top-level
+/// function so it can be passed to [compute].
+Uint8List _enhanceImageIsolate(Uint8List imageBytes) {
+  final original = img.decodeImage(imageBytes);
+  if (original == null) {
+    throw Exception('Failed to decode image in isolate');
+  }
+  final enhanced = ScannerService.adaptiveThreshold(original);
+  return Uint8List.fromList(img.encodePng(enhanced));
+}
 
 /// Service responsible for document scanning, image processing, and OCR.
 ///
@@ -124,24 +139,23 @@ class ScannerService {
   /// to a high-contrast black and white image, improving text readability
   /// for the OCR engine. The enhanced image is saved to a new file.
   ///
+  /// The CPU-intensive image processing (decode, threshold, encode) is
+  /// offloaded to a background isolate via [compute] to keep the UI
+  /// responsive during processing.
+  ///
   /// Returns the file path to the enhanced image.
   Future<String> enhanceImage(String imagePath) async {
     try {
       final bytes = await File(imagePath).readAsBytes();
-      final original = img.decodeImage(bytes);
-      if (original == null) {
-        throw ScannerException('Failed to decode image: $imagePath');
-      }
 
-      // Apply adaptive thresholding for shadow removal and B&W conversion
-      final enhanced = adaptiveThreshold(original);
+      // Offload CPU-intensive image processing to a background isolate
+      final encodedBytes = await compute(_enhanceImageIsolate, bytes);
 
       // Save the enhanced image
       final dir = await getApplicationDocumentsDirectory();
       final enhancedPath =
           '${dir.path}/enhanced_${_uuid.v4()}.png';
-      final encodedBytes = img.encodePng(enhanced);
-      await File(enhancedPath).writeAsBytes(Uint8List.fromList(encodedBytes));
+      await File(enhancedPath).writeAsBytes(encodedBytes);
 
       return enhancedPath;
     } catch (e) {

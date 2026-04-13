@@ -5,6 +5,7 @@ A privacy-focused, open-source document scanner built with Flutter. FluxScan is 
 ## Features
 
 - **Document Scanning**: Native edge detection and perspective correction via the device camera
+- **Perspective Transformation**: Detects document corners and warps angled photos into perfect rectangular top-down views
 - **OCR (Text Recognition)**: On-device text extraction using ML Kit with bundled models (works on de-Googled devices)
 - **Image Enhancement**: Automatic grayscale and contrast adjustment for better scan quality
 - **Searchable PDF**: Generates PDFs with invisible OCR text overlaid on scan images
@@ -25,6 +26,7 @@ lib/
 │   └── settings_screen.dart      # App preferences
 ├── services/
 │   ├── scanner_service.dart      # Document scanning, image processing, OCR
+│   ├── perspective_service.dart  # Perspective transformation (image warping)
 │   ├── pdf_service.dart          # Searchable PDF generation
 │   └── storage_service.dart      # Local document persistence
 └── widgets/
@@ -37,7 +39,7 @@ lib/
 |---------|---------|
 | `cunning_document_scanner` | Native document edge detection & scanning |
 | `google_mlkit_text_recognition` | On-device OCR (bundled model, no Play Services needed) |
-| `image` | Image processing (grayscale, contrast) |
+| `image` | Image processing (grayscale, contrast, perspective warp) |
 | `pdf` | PDF document generation |
 | `printing` | PDF printing and preview |
 | `share_plus` | System share sheet integration |
@@ -82,10 +84,11 @@ This is configured via the `<meta-data>` tag in `android/app/src/main/AndroidMan
 ## How It Works
 
 1. **Scan**: Tap the FAB to open the native document scanner with automatic edge detection
-2. **Enhance**: Images are converted to grayscale with contrast adjustment for OCR accuracy
-3. **Recognize**: ML Kit extracts text with bounding box positions from each page
-4. **Generate PDF**: A searchable PDF is created with the scan image as the background and invisible OCR text overlaid at the correct positions
-5. **Save & Share**: Documents are stored locally and can be shared as PDF files
+2. **Warp**: If document corners are detected, the image is perspective-warped into a perfect rectangular top-down view
+3. **Enhance**: Images are converted to grayscale with contrast adjustment for OCR accuracy
+4. **Recognize**: ML Kit extracts text with bounding box positions from each page
+5. **Generate PDF**: A searchable PDF is created with the scan image as the background and invisible OCR text overlaid at the correct positions
+6. **Save & Share**: Documents are stored locally and can be shared as PDF files
 
 ## Testing
 

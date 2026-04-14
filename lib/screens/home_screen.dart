@@ -102,6 +102,7 @@ class _HomeScreenState extends State<HomeScreen> {
         pdfPath: pdfPath,
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
+        textBlocks: processed.textBlocks,
       );
 
       await _storageService.saveDocument(document);

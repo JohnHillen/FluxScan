@@ -2,10 +2,45 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fluxscan/models/scan_document.dart';
+import 'package:fluxscan/services/scanner_service.dart';
 
 void main() {
   group('ScanDocument', () {
     final testDate = DateTime(2024, 1, 15, 10, 30);
+
+    /// Helper text blocks used across multiple tests.
+    const testTextBlocks = [
+      [
+        OcrTextBlock(
+          text: 'Hello World',
+          left: 10.0,
+          top: 20.0,
+          width: 200.0,
+          height: 30.0,
+          lines: [
+            OcrTextLine(
+              text: 'Hello World',
+              elements: [
+                OcrTextElement(
+                  text: 'Hello',
+                  left: 10.0,
+                  top: 20.0,
+                  width: 90.0,
+                  height: 20.0,
+                ),
+                OcrTextElement(
+                  text: 'World',
+                  left: 105.0,
+                  top: 20.0,
+                  width: 95.0,
+                  height: 20.0,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    ];
 
     ScanDocument createTestDocument({
       String id = 'test-id-123',
@@ -15,6 +50,7 @@ void main() {
       String? pdfPath = '/path/to/scan.pdf',
       DateTime? createdAt,
       DateTime? updatedAt,
+      List<List<OcrTextBlock>>? textBlocks,
     }) {
       return ScanDocument(
         id: id,
@@ -24,6 +60,7 @@ void main() {
         pdfPath: pdfPath,
         createdAt: createdAt ?? testDate,
         updatedAt: updatedAt ?? testDate,
+        textBlocks: textBlocks,
       );
     }
 
@@ -37,6 +74,14 @@ void main() {
       expect(doc.pdfPath, '/path/to/scan.pdf');
       expect(doc.createdAt, testDate);
       expect(doc.updatedAt, testDate);
+      expect(doc.textBlocks, isNull);
+    });
+
+    test('should store textBlocks when provided', () {
+      final doc = createTestDocument(textBlocks: testTextBlocks);
+      expect(doc.textBlocks, isNotNull);
+      expect(doc.textBlocks!.length, 1);
+      expect(doc.textBlocks![0][0].lines[0].elements[0].text, 'Hello');
     });
 
     test('should calculate page count correctly', () {
@@ -95,6 +140,17 @@ void main() {
         expect(copy.imagePaths, original.imagePaths);
         expect(copy.ocrText, original.ocrText);
         expect(copy.pdfPath, original.pdfPath);
+      });
+
+      test('should update textBlocks via copyWith', () {
+        final original = createTestDocument();
+        expect(original.textBlocks, isNull);
+
+        final updated = original.copyWith(textBlocks: testTextBlocks);
+        expect(updated.textBlocks, isNotNull);
+        expect(updated.textBlocks!.length, 1);
+        // Other fields unchanged
+        expect(updated.id, original.id);
       });
     });
 
@@ -182,6 +238,41 @@ void main() {
         // Should not throw
         final parsed = jsonDecode(jsonString);
         expect(parsed, isA<Map<String, dynamic>>());
+      });
+
+      test('should omit textBlocks from JSON when null', () {
+        final doc = createTestDocument();
+        final json = doc.toJson();
+        expect(json.containsKey('textBlocks'), isFalse);
+      });
+
+      test('should round-trip textBlocks through JSON string encoding', () {
+        final original = createTestDocument(textBlocks: testTextBlocks);
+        final jsonString = original.toJsonString();
+        final decoded = ScanDocument.fromJsonString(jsonString);
+
+        expect(decoded.textBlocks, isNotNull);
+        expect(decoded.textBlocks!.length, 1);
+        final elem = decoded.textBlocks![0][0].lines[0].elements[0];
+        expect(elem.text, 'Hello');
+        expect(elem.left, 10.0);
+        expect(elem.top, 20.0);
+        expect(elem.width, 90.0);
+        expect(elem.height, 20.0);
+      });
+
+      test('should handle missing textBlocks in legacy JSON', () {
+        final json = {
+          'id': 'id',
+          'title': 'title',
+          'imagePaths': <String>[],
+          'ocrText': '',
+          'createdAt': testDate.toIso8601String(),
+          'updatedAt': testDate.toIso8601String(),
+        };
+
+        final doc = ScanDocument.fromJson(json);
+        expect(doc.textBlocks, isNull);
       });
     });
 

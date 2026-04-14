@@ -12,8 +12,8 @@ import 'ocr_edit_screen.dart';
 
 /// Screen for viewing the details of a scanned document.
 ///
-/// Displays page images with an optional OCR text overlay and provides
-/// options to rename, share or print the generated PDF.
+/// Displays page images and provides options to edit OCR text, rename,
+/// share or print the generated PDF.
 class ScanResultScreen extends StatefulWidget {
   final ScanDocument document;
 
@@ -24,13 +24,8 @@ class ScanResultScreen extends StatefulWidget {
 }
 
 class _ScanResultScreenState extends State<ScanResultScreen> {
-  static const _pageBreakDelimiter = '\n\n--- Page Break ---\n\n';
-  static const _overlayOpacity = 0.75;
-
   final StorageService _storageService = StorageService();
   late ScanDocument _document;
-  bool _showOcrOverlay = false;
-  int _currentPage = 0;
   late final PageController _pageController;
 
   @override
@@ -134,13 +129,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     );
   }
 
-  /// Splits the combined OCR text into per-page strings.
-  List<String> get _ocrPages =>
-      _document.ocrText.split(_pageBreakDelimiter);
-
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         title: Text(_document.title),
@@ -155,15 +145,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
             tooltip: 'Share PDF',
             onPressed: _sharePdf,
           ),
-          // OCR toggle – shown next to the Print button
+          // OCR edit – shown next to the Print button
           IconButton(
-            icon: Icon(
-              Icons.text_fields,
-              color: _showOcrOverlay ? colorScheme.primary : null,
-            ),
-            tooltip: 'Toggle OCR Text',
-            onPressed: () =>
-                setState(() => _showOcrOverlay = !_showOcrOverlay),
+            icon: const Icon(Icons.text_fields),
+            tooltip: 'Edit OCR Text',
+            onPressed: _editOcrText,
           ),
           IconButton(
             icon: const Icon(Icons.print),
@@ -186,7 +172,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         PageView.builder(
           controller: _pageController,
           itemCount: _document.imagePaths.length,
-          onPageChanged: (index) => setState(() => _currentPage = index),
           itemBuilder: (context, index) {
             final imagePath = _document.imagePaths[index];
             return InteractiveViewer(
@@ -222,82 +207,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
             );
           },
         ),
-        if (_showOcrOverlay) _buildOcrOverlay(),
       ],
-    );
-  }
-
-  /// Semi-transparent panel anchored to the bottom of the screen that
-  /// shows the OCR text for the currently visible page and lets the
-  /// user edit it.
-  Widget _buildOcrOverlay() {
-    final pages = _ocrPages;
-    final pageText =
-        _currentPage < pages.length ? pages[_currentPage].trim() : '';
-
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.35,
-        ),
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(_overlayOpacity),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Header row with title and edit button
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 4, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'OCR Text',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.edit,
-                      color: Colors.white70,
-                      size: 20,
-                    ),
-                    tooltip: 'Edit OCR text',
-                    onPressed: _editOcrText,
-                  ),
-                ],
-              ),
-            ),
-            // Per-page OCR text content
-            if (pageText.isEmpty)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 4, 16, 16),
-                child: Text(
-                  'No text recognized on this page.',
-                  style: TextStyle(color: Colors.white60),
-                ),
-              )
-            else
-              Flexible(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                  child: Text(
-                    pageText,
-                    style: const TextStyle(color: Colors.white, height: 1.4),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
     );
   }
 }

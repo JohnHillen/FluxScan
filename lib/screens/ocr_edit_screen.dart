@@ -426,7 +426,12 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     );
   }
 
-  /// Builds a single semi-transparent word overlay box.
+  /// Builds a single word overlay box.
+  ///
+  /// When [showText] is false the box is rendered with a slightly transparent
+  /// blue fill and border so the image underneath remains visible.
+  /// When [showText] is true the box uses a solid (fully opaque) blue
+  /// background and the text is rendered in black for maximum legibility.
   Widget _buildWordOverlay({
     required OcrTextElement element,
     required double scale,
@@ -440,6 +445,18 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final width = element.width * scale;
     final height = element.height * scale;
 
+    final decoration = showText
+        ? const BoxDecoration(
+            color: Colors.blue,
+            border: Border.fromBorderSide(BorderSide(color: Colors.blue)),
+          )
+        : BoxDecoration(
+            color: Colors.blue.withOpacity(0.15),
+            border: Border.all(
+              color: Colors.blue.withOpacity(0.45),
+            ),
+          );
+
     return Positioned(
       left: left,
       top: top,
@@ -448,12 +465,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       child: GestureDetector(
         onTap: onTap,
         child: Container(
-          decoration: BoxDecoration(
-            color: Colors.blue.withOpacity(0.15),
-            border: Border.all(
-              color: Colors.blue.withOpacity(0.45),
-            ),
-          ),
+          decoration: decoration,
           child: showText && element.text.isNotEmpty
               ? FittedBox(
                   fit: BoxFit.scaleDown,
@@ -461,7 +473,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   child: Text(
                     element.text,
                     style: const TextStyle(
-                      color: Colors.blue,
+                      color: Colors.black,
                       height: 1,
                     ),
                   ),

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
@@ -172,12 +173,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // Use the document title as the shared filename so the recipient
-    // sees a meaningful name instead of the internal UUID-based path.
+    // Copy to temp directory with the correct document title as filename so
+    // the recipient sees a meaningful name instead of the UUID-based path.
     final fileName = sanitizedPdfFilename(document.title);
+    final tempDir = await getTemporaryDirectory();
+    final tempFile = await File(document.pdfPath!).copy(
+      '${tempDir.path}/$fileName',
+    );
 
     await Share.shareXFiles(
-      [XFile(document.pdfPath!, name: fileName)],
+      [XFile(tempFile.path)],
       subject: document.title,
     );
   }

@@ -171,63 +171,42 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   ) async {
     final element =
         _textBlocks[pageIdx][blockIdx].lines[lineIdx].elements[elemIdx];
-    final controller = TextEditingController(text: element.text);
 
-    try {
-      final result = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Edit Word'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (value) => Navigator.of(context).pop(value),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(controller.text),
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      );
+    if (!mounted) return;
 
-      if (result != null && result != element.text) {
-        setState(() {
-          _hasChanges = true;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => _EditWordDialog(initialText: element.text),
+    );
 
-          // Rebuild the element (text only; bounding box unchanged).
-          final updatedElement = element.copyWith(text: result);
+    if (!mounted) return;
 
-          final line = _textBlocks[pageIdx][blockIdx].lines[lineIdx];
-          final updatedElements = List<OcrTextElement>.from(line.elements)
-            ..[elemIdx] = updatedElement;
-          final updatedLine = line.copyWith(
-            text: updatedElements.map((e) => e.text).join(' '),
-            elements: updatedElements,
-          );
+    if (result != null && result != element.text) {
+      setState(() {
+        _hasChanges = true;
 
-          final block = _textBlocks[pageIdx][blockIdx];
-          final updatedLines = List<OcrTextLine>.from(block.lines)
-            ..[lineIdx] = updatedLine;
-          final updatedBlock = block.copyWith(
-            text: updatedLines.map((l) => l.text).join('\n'),
-            lines: updatedLines,
-          );
+        // Rebuild the element (text only; bounding box unchanged).
+        final updatedElement = element.copyWith(text: result);
 
-          _textBlocks[pageIdx] = List<OcrTextBlock>.from(_textBlocks[pageIdx])
-            ..[blockIdx] = updatedBlock;
-        });
-      }
-    } finally {
-      controller.dispose();
+        final line = _textBlocks[pageIdx][blockIdx].lines[lineIdx];
+        final updatedElements = List<OcrTextElement>.from(line.elements)
+          ..[elemIdx] = updatedElement;
+        final updatedLine = line.copyWith(
+          text: updatedElements.map((e) => e.text).join(' '),
+          elements: updatedElements,
+        );
+
+        final block = _textBlocks[pageIdx][blockIdx];
+        final updatedLines = List<OcrTextLine>.from(block.lines)
+          ..[lineIdx] = updatedLine;
+        final updatedBlock = block.copyWith(
+          text: updatedLines.map((l) => l.text).join('\n'),
+          lines: updatedLines,
+        );
+
+        _textBlocks[pageIdx] = List<OcrTextBlock>.from(_textBlocks[pageIdx])
+          ..[blockIdx] = updatedBlock;
+      });
     }
   }
 
@@ -466,6 +445,62 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Dialog for correcting a single OCR word.
+///
+/// Owns the [TextEditingController] so that it is disposed via [State.dispose]
+/// after the dialog widget is fully removed from the tree — preventing the
+/// `_dependents.isEmpty` assertion that can fire when the controller is
+/// disposed while the closing animation is still in progress.
+class _EditWordDialog extends StatefulWidget {
+  final String initialText;
+
+  const _EditWordDialog({required this.initialText});
+
+  @override
+  State<_EditWordDialog> createState() => _EditWordDialogState();
+}
+
+class _EditWordDialogState extends State<_EditWordDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialText);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit Word'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(
+          border: OutlineInputBorder(),
+        ),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

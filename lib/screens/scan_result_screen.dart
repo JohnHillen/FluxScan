@@ -47,46 +47,24 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   }
 
   Future<void> _renameDocument() async {
-    final controller = TextEditingController(text: _document.title);
-    try {
-      final newTitle = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Rename Document'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Document name',
-            ),
-            onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.of(context).pop(controller.text.trim()),
-              child: const Text('Rename'),
-            ),
-          ],
-        ),
-      );
+    if (!mounted) return;
 
-      if (newTitle != null && newTitle.isNotEmpty && newTitle != _document.title) {
-        final updated = _document.copyWith(
-          title: newTitle,
-          updatedAt: DateTime.now(),
-        );
-        await _storageService.saveDocument(updated);
-        if (mounted) {
-          setState(() => _document = updated);
-        }
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (_) => _RenameDocumentDialog(initialTitle: _document.title),
+    );
+
+    if (!mounted) return;
+
+    if (newTitle != null && newTitle.isNotEmpty && newTitle != _document.title) {
+      final updated = _document.copyWith(
+        title: newTitle,
+        updatedAt: DateTime.now(),
+      );
+      await _storageService.saveDocument(updated);
+      if (mounted) {
+        setState(() => _document = updated);
       }
-    } finally {
-      controller.dispose();
     }
   }
 
@@ -320,6 +298,62 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Dialog for renaming a document.
+///
+/// Owns the [TextEditingController] so that it is disposed via [State.dispose]
+/// after the dialog widget is fully removed from the tree — preventing the
+/// `_dependents.isEmpty` assertion that can fire when the controller is
+/// disposed while the closing animation is still in progress.
+class _RenameDocumentDialog extends StatefulWidget {
+  final String initialTitle;
+
+  const _RenameDocumentDialog({required this.initialTitle});
+
+  @override
+  State<_RenameDocumentDialog> createState() => _RenameDocumentDialogState();
+}
+
+class _RenameDocumentDialogState extends State<_RenameDocumentDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialTitle);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename Document'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(
+          labelText: 'Document name',
+        ),
+        onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Rename'),
+        ),
+      ],
     );
   }
 }

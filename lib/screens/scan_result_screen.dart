@@ -6,6 +6,7 @@ import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/scan_document.dart';
+import '../services/pdf_service.dart';
 import '../services/storage_service.dart';
 import '../utils/filename_utils.dart';
 
@@ -27,6 +28,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   static const _overlayOpacity = 0.75;
 
   final StorageService _storageService = StorageService();
+  final PdfService _pdfService = PdfService();
   late ScanDocument _document;
   bool _showOcrOverlay = false;
   int _currentPage = 0;
@@ -164,8 +166,33 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       );
 
       if (result != null && result != _document.ocrText) {
+        // Regenerate the PDF so the exported file contains the edited text.
+        final oldPdfPath = _document.pdfPath;
+        final newPdfPath = await _pdfService.regeneratePdfFromPlainText(
+          imagePaths: _document.imagePaths,
+          combinedText: result,
+          title: _document.title,
+        );
+
+        // Delete the old PDF file to free storage space.
+        // Failure to delete (e.g., due to a file lock) is non-fatal and
+        // should not prevent the document update from completing.
+        if (oldPdfPath != null) {
+          try {
+            final oldPdf = File(oldPdfPath);
+            if (await oldPdf.exists()) {
+              await oldPdf.delete();
+            }
+          } catch (e) {
+            // Ignore deletion errors; the orphaned file will remain on disk
+            // but the document will correctly reference the new PDF.
+            debugPrint('Failed to delete old PDF at $oldPdfPath: $e');
+          }
+        }
+
         final updated = _document.copyWith(
           ocrText: result,
+          pdfPath: newPdfPath,
           updatedAt: DateTime.now(),
         );
         await _storageService.saveDocument(updated);

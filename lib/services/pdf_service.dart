@@ -17,6 +17,12 @@ import 'scanner_service.dart';
 class PdfService {
   static const _uuid = Uuid();
 
+  /// Font size used for the invisible text overlay.
+  ///
+  /// Kept small enough that the text wraps within typical A4 page dimensions
+  /// without overflowing, while still being indexed by PDF search engines.
+  static const _invisibleTextFontSize = 12.0;
+
   /// Computes the uniform scale factor and centering offsets used to map
   /// OCR bounding-box coordinates from image-pixel space to PDF-point space.
   ///
@@ -132,8 +138,10 @@ class PdfService {
                             fit: pw.BoxFit.fill,
                             child: pw.Text(
                               element.text,
-                              style: const pw.TextStyle(
-                                color: PdfColor(0, 0, 0, 0),
+                              style: pw.TextStyle(
+                                renderingMode:
+                                    PdfTextRenderingMode.invisible,
+                                fontSize: _invisibleTextFontSize,
                               ),
                             ),
                           ),
@@ -150,6 +158,92 @@ class PdfService {
     }
 
     // Save the PDF to the documents directory
+    final dir = await getApplicationDocumentsDirectory();
+    final pdfPath = '${dir.path}/scan_${_uuid.v4()}.pdf';
+    final file = File(pdfPath);
+    await file.writeAsBytes(await pdf.save());
+
+    return pdfPath;
+  }
+
+  /// Regenerates a searchable PDF from scanned images and plain (edited) text.
+  ///
+  /// Used when the user has manually edited the OCR text. Because the original
+  /// word-level bounding boxes are no longer available, the edited text for
+  /// each page is placed as a single invisible text block that covers the page.
+  /// The text is still fully searchable and copy-pasteable in PDF viewers.
+  ///
+  /// [imagePaths] - The original image file paths (one per page).
+  /// [combinedText] - The full edited OCR text with page-break delimiters.
+  /// [title] - The document title for PDF metadata.
+  ///
+  /// Returns the file path to the regenerated PDF.
+  Future<String> regeneratePdfFromPlainText({
+    required List<String> imagePaths,
+    required String combinedText,
+    required String title,
+  }) async {
+    const pageBreakDelimiter = '\n\n--- Page Break ---\n\n';
+    final pageTexts = combinedText.split(pageBreakDelimiter);
+
+    final pdf = pw.Document(
+      title: title,
+      author: 'FluxScan',
+      creator: 'FluxScan - Privacy-First Document Scanner',
+      producer: 'FluxScan',
+    );
+
+    for (var i = 0; i < imagePaths.length; i++) {
+      final imageFile = File(imagePaths[i]);
+      final imageBytes = await imageFile.readAsBytes();
+      final image = pw.MemoryImage(imageBytes);
+
+      final decodedImage = await _decodeImageDimensions(imageBytes);
+      final imgWidth = decodedImage.width.toDouble();
+      final imgHeight = decodedImage.height.toDouble();
+
+      final pageFormat =
+          imgWidth > imgHeight ? PdfPageFormat.a4.landscape : PdfPageFormat.a4;
+
+      final pageText = i < pageTexts.length ? pageTexts[i].trim() : '';
+
+      pdf.addPage(
+        pw.Page(
+          pageFormat: pageFormat,
+          margin: pw.EdgeInsets.zero,
+          build: (pw.Context context) {
+            return pw.Stack(
+              children: [
+                // Full-page scanned image as background
+                pw.Positioned.fill(
+                  child: pw.Image(image, fit: pw.BoxFit.contain),
+                ),
+                // Invisible edited text overlay for searchability.
+                // Placed as a single block since word-level positions are
+                // not available after manual editing.
+                if (pageText.isNotEmpty)
+                  pw.Positioned(
+                    left: 0,
+                    top: 0,
+                    child: pw.SizedBox(
+                      width: pageFormat.width,
+                      height: pageFormat.height,
+                      child: pw.Text(
+                        pageText,
+                        style: pw.TextStyle(
+                          renderingMode: PdfTextRenderingMode.invisible,
+                          fontSize: _invisibleTextFontSize,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      );
+    }
+
     final dir = await getApplicationDocumentsDirectory();
     final pdfPath = '${dir.path}/scan_${_uuid.v4()}.pdf';
     final file = File(pdfPath);

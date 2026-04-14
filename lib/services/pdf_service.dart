@@ -75,8 +75,10 @@ class PdfService {
       final imgWidth = decodedImage.width.toDouble();
       final imgHeight = decodedImage.height.toDouble();
 
-      // Use A4 page format
-      const pageFormat = PdfPageFormat.a4;
+      // Use A4 page format, choosing landscape for landscape images so the
+      // scan fills the page without distortion.
+      final pageFormat =
+          imgWidth > imgHeight ? PdfPageFormat.a4.landscape : PdfPageFormat.a4;
 
       // Compute the uniform scale factor matching BoxFit.contain behavior.
       // The image is scaled uniformly to fit inside the page and centered,

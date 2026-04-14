@@ -32,6 +32,12 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   final PdfService _pdfService = PdfService();
   final StorageService _storageService = StorageService();
 
+  static const _pageBreakDelimiter = '\n\n--- Page Break ---\n\n';
+
+  /// A4 at 300 DPI — used as the fallback when image dimensions cannot be
+  /// determined from the file header.
+  static const _fallbackImageSize = _ImageSize(2480, 3508);
+
   late ScanDocument _document;
 
   /// Mutable, per-page list of text blocks. Edited in place when the user
@@ -126,7 +132,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       return _readJpegSize(bytes);
     }
     // Fallback (A4 @ 300 dpi)
-    return const _ImageSize(2480, 3508);
+    return _fallbackImageSize;
   }
 
   static _ImageSize _readJpegSize(List<int> bytes) {
@@ -148,7 +154,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         break;
       }
     }
-    return const _ImageSize(2480, 3508);
+    return _fallbackImageSize;
   }
 
   // ---------------------------------------------------------------------------
@@ -236,10 +242,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     setState(() => _isSaving = true);
 
     try {
-      const pageBreakDelimiter = '\n\n--- Page Break ---\n\n';
       final updatedOcrText = _textBlocks
           .map((blocks) => blocks.map((b) => b.text).join('\n'))
-          .join(pageBreakDelimiter);
+          .join(_pageBreakDelimiter);
 
       // Regenerate with the mutated OcrTextElement list so word-level
       // bounding boxes (FittedBox strategy) are retained in the PDF.

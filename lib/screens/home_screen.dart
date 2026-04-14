@@ -1,12 +1,12 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/scan_document.dart';
+import '../services/document_naming_service.dart';
 import '../services/pdf_service.dart';
 import '../services/scanner_service.dart';
 import '../services/storage_service.dart';
@@ -27,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final StorageService _storageService = StorageService();
   final ScannerService _scannerService = ScannerService();
   final PdfService _pdfService = PdfService();
+  final DocumentNamingService _namingService = DocumentNamingService();
 
   List<ScanDocument> _documents = [];
   bool _isLoading = true;
@@ -84,8 +85,9 @@ class _HomeScreenState extends State<HomeScreen> {
       final processed = await _scannerService.processImages(imagePaths);
 
       // Step 3: Generate searchable PDF (use original images for the visual layer)
-      final timestamp = DateFormat('yyyy-MM-dd_HH-mm-ss').format(DateTime.now());
-      final title = 'Scan $timestamp';
+      final firstPageBlocks =
+          processed.textBlocks.isNotEmpty ? processed.textBlocks[0] : [];
+      final title = _namingService.generateName(firstPageBlocks);
 
       final pdfPath = await _pdfService.generateSearchablePdf(
         imagePaths: processed.originalImagePaths,

@@ -120,7 +120,14 @@ class PdfService {
                 // stretching to ensure text highlight positions match exactly.
                 ...pageBlocks.expand((block) {
                   return block.lines.expand((line) {
-                    return line.elements.map((element) {
+                    return line.elements
+                        .where(
+                          (element) =>
+                              element.text.isNotEmpty &&
+                              element.width > 0 &&
+                              element.height > 0,
+                        )
+                        .map((element) {
                       final mappedLeft =
                           element.left * uniformScale + offsetX;
                       final mappedTop =

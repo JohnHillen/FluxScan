@@ -99,6 +99,14 @@ void main() {
       );
     });
 
+    test('matches KÜNDIGUNG in uppercase (umlaut case-insensitive)', () {
+      final blocks = _blocksFromText('KÜNDIGUNG 01.01.2025');
+      expect(
+        service.generateName(blocks, now: fixedNow),
+        'Kündigung_01-01-2025',
+      );
+    });
+
     test('matches Quittung keyword', () {
       final blocks = _blocksFromText('Quittung 31.12.2024');
       expect(

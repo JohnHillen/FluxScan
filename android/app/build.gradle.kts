@@ -6,7 +6,8 @@ plugins {
 
 android {
     namespace = "de.fluxscan.app"
-    compileSdk = 34
+    compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     sourceSets {
         getByName("main").java.srcDirs("src/main/kotlin")
@@ -15,7 +16,7 @@ android {
     defaultConfig {
         applicationId = "de.fluxscan.app"
         minSdk = 21
-        targetSdk = 34
+        targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
@@ -41,6 +42,6 @@ flutter {
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10")
+    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0")
     implementation("androidx.multidex:multidex:2.0.1")
 }

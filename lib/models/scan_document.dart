@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../services/scanner_service.dart';
+
 /// Represents a scanned document with its metadata and file paths.
 ///
 /// Each [ScanDocument] corresponds to a single scanning session that may
@@ -26,6 +28,13 @@ class ScanDocument {
   /// Timestamp of the last modification.
   final DateTime updatedAt;
 
+  /// Structured OCR text blocks per page, used for word-level PDF overlay.
+  ///
+  /// Each entry corresponds to one page and contains [OcrTextBlock] objects
+  /// with bounding box positions and nested [OcrTextLine]/[OcrTextElement]
+  /// data. `null` for documents created before word-level OCR was stored.
+  final List<List<OcrTextBlock>>? textBlocks;
+
   /// Number of pages in this document.
   int get pageCount => imagePaths.length;
 
@@ -37,6 +46,7 @@ class ScanDocument {
     this.pdfPath,
     required this.createdAt,
     required this.updatedAt,
+    this.textBlocks,
   });
 
   /// Creates a copy of this document with the given fields replaced.
@@ -48,6 +58,7 @@ class ScanDocument {
     String? pdfPath,
     DateTime? createdAt,
     DateTime? updatedAt,
+    List<List<OcrTextBlock>>? textBlocks,
   }) {
     return ScanDocument(
       id: id ?? this.id,
@@ -57,6 +68,7 @@ class ScanDocument {
       pdfPath: pdfPath ?? this.pdfPath,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      textBlocks: textBlocks ?? this.textBlocks,
     );
   }
 
@@ -70,11 +82,28 @@ class ScanDocument {
       'pdfPath': pdfPath,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
+      if (textBlocks != null)
+        'textBlocks': textBlocks!
+            .map((page) => page.map((b) => b.toJson()).toList())
+            .toList(),
     };
   }
 
   /// Deserializes a [ScanDocument] from a JSON map.
   factory ScanDocument.fromJson(Map<String, dynamic> json) {
+    List<List<OcrTextBlock>>? textBlocks;
+    if (json['textBlocks'] != null) {
+      textBlocks = (json['textBlocks'] as List<dynamic>)
+          .map(
+            (page) => (page as List<dynamic>)
+                .map(
+                  (b) => OcrTextBlock.fromJson(b as Map<String, dynamic>),
+                )
+                .toList(),
+          )
+          .toList();
+    }
+
     return ScanDocument(
       id: json['id'] as String,
       title: json['title'] as String,
@@ -83,6 +112,7 @@ class ScanDocument {
       pdfPath: json['pdfPath'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
+      textBlocks: textBlocks,
     );
   }
 

@@ -307,6 +307,32 @@ class OcrTextElement {
     required this.width,
     required this.height,
   });
+
+  /// Returns a copy with the given fields replaced.
+  /// Only [text] may change; bounding box fields are always preserved.
+  OcrTextElement copyWith({String? text}) => OcrTextElement(
+        text: text ?? this.text,
+        left: left,
+        top: top,
+        width: width,
+        height: height,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'left': left,
+        'top': top,
+        'width': width,
+        'height': height,
+      };
+
+  factory OcrTextElement.fromJson(Map<String, dynamic> json) => OcrTextElement(
+        text: json['text'] as String,
+        left: (json['left'] as num).toDouble(),
+        top: (json['top'] as num).toDouble(),
+        width: (json['width'] as num).toDouble(),
+        height: (json['height'] as num).toDouble(),
+      );
 }
 
 /// Holds a single OCR text line with its elements (words).
@@ -318,6 +344,24 @@ class OcrTextLine {
     required this.text,
     required this.elements,
   });
+
+  OcrTextLine copyWith({String? text, List<OcrTextElement>? elements}) =>
+      OcrTextLine(
+        text: text ?? this.text,
+        elements: elements ?? this.elements,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'elements': elements.map((e) => e.toJson()).toList(),
+      };
+
+  factory OcrTextLine.fromJson(Map<String, dynamic> json) => OcrTextLine(
+        text: json['text'] as String,
+        elements: (json['elements'] as List<dynamic>)
+            .map((e) => OcrTextElement.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
 }
 
 /// Holds a single OCR text block with its bounding box coordinates
@@ -338,6 +382,36 @@ class OcrTextBlock {
     required this.height,
     this.lines = const [],
   });
+
+  OcrTextBlock copyWith({String? text, List<OcrTextLine>? lines}) =>
+      OcrTextBlock(
+        text: text ?? this.text,
+        left: left,
+        top: top,
+        width: width,
+        height: height,
+        lines: lines ?? this.lines,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'left': left,
+        'top': top,
+        'width': width,
+        'height': height,
+        'lines': lines.map((l) => l.toJson()).toList(),
+      };
+
+  factory OcrTextBlock.fromJson(Map<String, dynamic> json) => OcrTextBlock(
+        text: json['text'] as String,
+        left: (json['left'] as num).toDouble(),
+        top: (json['top'] as num).toDouble(),
+        width: (json['width'] as num).toDouble(),
+        height: (json['height'] as num).toDouble(),
+        lines: (json['lines'] as List<dynamic>)
+            .map((l) => OcrTextLine.fromJson(l as Map<String, dynamic>))
+            .toList(),
+      );
 }
 
 /// Result of processing scanned images through enhancement and OCR.

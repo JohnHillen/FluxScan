@@ -256,6 +256,57 @@ void main() {
       expect(element.width, 50.0);
       expect(element.height, 15.0);
     });
+
+    test('copyWith should update text but preserve bounding box', () {
+      const original = OcrTextElement(
+        text: 'Hello',
+        left: 10.0,
+        top: 20.0,
+        width: 50.0,
+        height: 15.0,
+      );
+
+      final updated = original.copyWith(text: 'Hi');
+
+      expect(updated.text, 'Hi');
+      expect(updated.left, original.left);
+      expect(updated.top, original.top);
+      expect(updated.width, original.width);
+      expect(updated.height, original.height);
+    });
+
+    test('copyWith with no argument should return equivalent element', () {
+      const original = OcrTextElement(
+        text: 'Hello',
+        left: 10.0,
+        top: 20.0,
+        width: 50.0,
+        height: 15.0,
+      );
+
+      final copy = original.copyWith();
+      expect(copy.text, original.text);
+      expect(copy.left, original.left);
+    });
+
+    test('should round-trip through JSON', () {
+      const original = OcrTextElement(
+        text: 'Hello',
+        left: 10.0,
+        top: 20.0,
+        width: 50.0,
+        height: 15.0,
+      );
+
+      final json = original.toJson();
+      final decoded = OcrTextElement.fromJson(json);
+
+      expect(decoded.text, original.text);
+      expect(decoded.left, original.left);
+      expect(decoded.top, original.top);
+      expect(decoded.width, original.width);
+      expect(decoded.height, original.height);
+    });
   });
 
   group('OcrTextLine', () {
@@ -284,6 +335,55 @@ void main() {
       expect(line.elements.length, 2);
       expect(line.elements[0].text, 'Hello');
       expect(line.elements[1].text, 'World');
+    });
+
+    test('copyWith should update text and elements', () {
+      const original = OcrTextLine(
+        text: 'Hello World',
+        elements: [
+          OcrTextElement(
+            text: 'Hello',
+            left: 10.0,
+            top: 20.0,
+            width: 50.0,
+            height: 15.0,
+          ),
+        ],
+      );
+
+      final updated = original.copyWith(text: 'Hi World');
+      expect(updated.text, 'Hi World');
+      expect(updated.elements, original.elements);
+    });
+
+    test('should round-trip through JSON', () {
+      const original = OcrTextLine(
+        text: 'Hello World',
+        elements: [
+          OcrTextElement(
+            text: 'Hello',
+            left: 10.0,
+            top: 20.0,
+            width: 50.0,
+            height: 15.0,
+          ),
+          OcrTextElement(
+            text: 'World',
+            left: 65.0,
+            top: 20.0,
+            width: 55.0,
+            height: 15.0,
+          ),
+        ],
+      );
+
+      final json = original.toJson();
+      final decoded = OcrTextLine.fromJson(json);
+
+      expect(decoded.text, original.text);
+      expect(decoded.elements.length, original.elements.length);
+      expect(decoded.elements[0].text, 'Hello');
+      expect(decoded.elements[1].text, 'World');
     });
   });
 
@@ -339,6 +439,59 @@ void main() {
       expect(block.lines[0].elements.length, 2);
       expect(block.lines[0].elements[0].text, 'Hello');
       expect(block.lines[0].elements[1].text, 'World');
+    });
+
+    test('copyWith should update text and lines, preserving bounding box', () {
+      const original = OcrTextBlock(
+        text: 'Old text',
+        left: 10.0,
+        top: 20.0,
+        width: 200.0,
+        height: 30.0,
+      );
+
+      final updated = original.copyWith(text: 'New text');
+
+      expect(updated.text, 'New text');
+      expect(updated.left, original.left);
+      expect(updated.top, original.top);
+      expect(updated.width, original.width);
+      expect(updated.height, original.height);
+    });
+
+    test('should round-trip through JSON', () {
+      const original = OcrTextBlock(
+        text: 'Hello World',
+        left: 10.0,
+        top: 20.0,
+        width: 200.0,
+        height: 30.0,
+        lines: [
+          OcrTextLine(
+            text: 'Hello World',
+            elements: [
+              OcrTextElement(
+                text: 'Hello',
+                left: 10.0,
+                top: 20.0,
+                width: 50.0,
+                height: 15.0,
+              ),
+            ],
+          ),
+        ],
+      );
+
+      final json = original.toJson();
+      final decoded = OcrTextBlock.fromJson(json);
+
+      expect(decoded.text, original.text);
+      expect(decoded.left, original.left);
+      expect(decoded.top, original.top);
+      expect(decoded.width, original.width);
+      expect(decoded.height, original.height);
+      expect(decoded.lines.length, 1);
+      expect(decoded.lines[0].elements[0].text, 'Hello');
     });
   });
 

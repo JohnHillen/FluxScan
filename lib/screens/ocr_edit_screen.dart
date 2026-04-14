@@ -50,6 +50,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   int _currentPage = 0;
   bool _hasChanges = false;
   bool _isSaving = false;
+  bool _showOcrText = false;
 
   @override
   void initState() {
@@ -278,6 +279,14 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       appBar: AppBar(
         title: const Text('Edit OCR Text'),
         actions: [
+          IconButton(
+            icon: Icon(
+              Icons.text_fields,
+              color: _showOcrText ? Colors.blue : null,
+            ),
+            tooltip: _showOcrText ? 'Hide OCR text' : 'Show OCR text',
+            onPressed: () => setState(() => _showOcrText = !_showOcrText),
+          ),
           if (_isSaving)
             const Padding(
               padding: EdgeInsets.all(16),
@@ -409,6 +418,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   scale: scale,
                   offsetX: offsetX,
                   offsetY: offsetY,
+                  showText: _showOcrText,
                   onTap: () => _editElement(pageIndex, bi, li, ei),
                 ),
         ],
@@ -422,6 +432,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     required double scale,
     required double offsetX,
     required double offsetY,
+    required bool showText,
     required VoidCallback onTap,
   }) {
     final left = element.left * scale + offsetX;
@@ -443,6 +454,19 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
               color: Colors.blue.withOpacity(0.45),
             ),
           ),
+          child: showText && element.text.isNotEmpty
+              ? FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.center,
+                  child: Text(
+                    element.text,
+                    style: const TextStyle(
+                      color: Colors.blue,
+                      height: 1,
+                    ),
+                  ),
+                )
+              : null,
         ),
       ),
     );

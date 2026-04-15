@@ -86,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Step 3: Generate searchable PDF (use original images for the visual layer)
       final firstPageBlocks =
-          processed.textBlocks.isNotEmpty ? processed.textBlocks[0] : [];
+          processed.textBlocks.isNotEmpty ? processed.textBlocks[0] : <OcrTextBlock>[];
       final title = _namingService.generateName(firstPageBlocks);
 
       final pdfPath = await _pdfService.generateSearchablePdf(

@@ -25,6 +25,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  static const _uuid = Uuid();
+
   final StorageService _storageService = StorageService();
   final ScannerService _scannerService = ScannerService();
   final PdfService _pdfService = PdfService();
@@ -99,7 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Step 4: Save the document (use original images for display)
       final document = ScanDocument(
-        id: const Uuid().v4(),
+        id: _uuid.v4(),
         title: title,
         imagePaths: processed.originalImagePaths,
         ocrText: processed.combinedText,
@@ -176,7 +178,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final persistentImagePaths = <String>[];
       for (final tmpPath in processed.originalImagePaths) {
         final persistentPath =
-            '${docsDir.path}/imported_${const Uuid().v4()}.png';
+            '${docsDir.path}/imported_${_uuid.v4()}.png';
         await File(tmpPath).copy(persistentPath);
         persistentImagePaths.add(persistentPath);
       }
@@ -195,7 +197,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Step 6: Save the document with the persistent image paths.
       final document = ScanDocument(
-        id: const Uuid().v4(),
+        id: _uuid.v4(),
         title: title,
         imagePaths: persistentImagePaths,
         ocrText: processed.combinedText,

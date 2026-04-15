@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/scan_document.dart';
 import '../services/document_naming_service.dart';
+import '../services/pdf_import_service.dart';
 import '../services/pdf_service.dart';
 import '../services/scanner_service.dart';
 import '../services/storage_service.dart';
@@ -28,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ScannerService _scannerService = ScannerService();
   final PdfService _pdfService = PdfService();
   final DocumentNamingService _namingService = DocumentNamingService();
+  final PdfImportService _pdfImportService = PdfImportService();
 
   List<ScanDocument> _documents = [];
   bool _isLoading = true;
@@ -136,6 +138,112 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _importPdf() async {
+    if (_isScanning) return;
+
+    setState(() => _isScanning = true);
+
+    // Track temp image paths so they can always be cleaned up.
+    var tempImagePaths = <String>[];
+
+    try {
+      // Step 1: Let the user pick a PDF file.
+      final pdfPath = await _pdfImportService.pickPdfFile();
+      if (pdfPath == null) {
+        if (mounted) setState(() => _isScanning = false);
+        return;
+      }
+
+      if (!mounted) return;
+      _showSnackBar('Processing imported PDF…');
+
+      // Step 2: Rasterise each PDF page to a temporary PNG image.
+      tempImagePaths = await _pdfImportService.renderPagesToImages(pdfPath);
+      if (tempImagePaths.isEmpty) {
+        if (mounted) {
+          setState(() => _isScanning = false);
+          _showError('Could not extract pages from the selected PDF.');
+        }
+        return;
+      }
+
+      // Step 3: Enhance images and run OCR through the existing pipeline.
+      final processed = await _scannerService.processImages(tempImagePaths);
+
+      // Step 4: Copy the rendered page images to persistent storage so the
+      // document thumbnail and preview continue to work after temp cleanup.
+      final docsDir = await getApplicationDocumentsDirectory();
+      final persistentImagePaths = <String>[];
+      for (final tmpPath in processed.originalImagePaths) {
+        final persistentPath =
+            '${docsDir.path}/imported_${const Uuid().v4()}.png';
+        await File(tmpPath).copy(persistentPath);
+        persistentImagePaths.add(persistentPath);
+      }
+
+      // Step 5: Generate a new searchable PDF from the persistent images.
+      final firstPageBlocks = processed.textBlocks.isNotEmpty
+          ? processed.textBlocks[0]
+          : <OcrTextBlock>[];
+      final title = _namingService.generateName(firstPageBlocks);
+
+      final newPdfPath = await _pdfService.generateSearchablePdf(
+        imagePaths: persistentImagePaths,
+        textBlocks: processed.textBlocks,
+        title: title,
+      );
+
+      // Step 6: Save the document with the persistent image paths.
+      final document = ScanDocument(
+        id: const Uuid().v4(),
+        title: title,
+        imagePaths: persistentImagePaths,
+        ocrText: processed.combinedText,
+        pdfPath: newPdfPath,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        textBlocks: processed.textBlocks,
+      );
+
+      await _storageService.saveDocument(document);
+      await _loadDocuments();
+
+      // Step 7: Delete the temporary rendered images now that the searchable
+      // PDF has been generated and the document is saved.
+      for (final path in tempImagePaths) {
+        try {
+          await File(path).delete();
+        } catch (_) {
+          // Best-effort cleanup; ignore individual file errors.
+        }
+      }
+      tempImagePaths = [];
+
+      if (mounted) {
+        setState(() => _isScanning = false);
+        _showSnackBar('PDF imported successfully!');
+
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ScanResultScreen(document: document),
+          ),
+        );
+        await _loadDocuments();
+      }
+    } catch (e) {
+      // Clean up any temporary images that were created before the error.
+      for (final path in tempImagePaths) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() => _isScanning = false);
+        _showError('Failed to import PDF: $e');
+      }
+    }
+  }
+
   Future<void> _deleteDocument(ScanDocument document) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -213,6 +321,11 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('FluxScan'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.upload_file),
+            tooltip: 'Import PDF',
+            onPressed: _isScanning ? null : _importPdf,
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             tooltip: 'Settings',

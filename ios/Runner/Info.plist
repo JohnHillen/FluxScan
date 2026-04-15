@@ -28,6 +28,8 @@
 	<string>FluxScan needs camera access to scan documents.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>FluxScan needs photo library access to save scanned documents.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>FluxScan needs access to save documents to your photo library.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

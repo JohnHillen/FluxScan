@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import 'screens/home_screen.dart';
 
@@ -8,6 +9,9 @@ import 'screens/home_screen.dart';
 /// performed entirely on-device. No data ever leaves the user's phone.
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Required when using PdfDocument directly (without a pdfrx viewer widget)
+  // to ensure the cache directory and engine are properly initialised.
+  pdfrxFlutterInitialize();
   runApp(const FluxScanApp());
 }
 

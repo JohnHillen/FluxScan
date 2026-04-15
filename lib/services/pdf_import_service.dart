@@ -19,9 +19,9 @@ class PdfImportService {
   /// Scale factor applied when rendering PDF pages to images.
   ///
   /// PDF page dimensions are measured in points (1 pt = 1/72 inch).
-  /// Multiplying by 2.0 gives ~144 DPI, which is sufficient for accurate
-  /// OCR while keeping memory usage reasonable.
-  static const _renderScale = 2.0;
+  /// Multiplying by 3.0 gives ~216 DPI, which ensures high OCR quality
+  /// while keeping memory usage reasonable.
+  static const _renderScale = 3.0;
 
   /// Opens the system file picker filtered to PDF files.
   ///

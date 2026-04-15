@@ -13,9 +13,9 @@ void main() {
   });
 
   group('PdfService.computePageMapping', () {
-    test('should use uniform scale with no offset for matching aspect ratio',
+    test('should return scale 1.0 on both axes for matching aspect ratio',
         () {
-      // Image aspect ratio matches page aspect ratio exactly
+      // Image dimensions match page dimensions exactly
       final result = PdfService.computePageMapping(
         imageWidth: 595.28,
         imageHeight: 841.89,
@@ -23,20 +23,16 @@ void main() {
         pageHeight: 841.89,
       );
 
-      expect(result.scale, closeTo(1.0, 0.001));
-      expect(result.offsetX, closeTo(0.0, 0.001));
-      expect(result.offsetY, closeTo(0.0, 0.001));
+      expect(result.scaleX, closeTo(1.0, 0.001));
+      expect(result.scaleY, closeTo(1.0, 0.001));
     });
 
-    test('should add horizontal offset for tall narrow images', () {
+    test('should return independent scaleX and scaleY for tall narrow images',
+        () {
       // Image is taller relative to its width than the page
       // e.g., 1000x2000 image on 595.28x841.89 A4 page
       // scaleX = 595.28/1000 = 0.59528
       // scaleY = 841.89/2000 = 0.420945
-      // uniformScale = min(0.59528, 0.420945) = 0.420945
-      // rendered width = 1000 * 0.420945 = 420.945
-      // offsetX = (595.28 - 420.945) / 2 = 87.1675
-      // offsetY = 0 (height fits exactly)
       final result = PdfService.computePageMapping(
         imageWidth: 1000,
         imageHeight: 2000,
@@ -44,19 +40,15 @@ void main() {
         pageHeight: 841.89,
       );
 
-      expect(result.scale, closeTo(0.420945, 0.001));
-      expect(result.offsetX, greaterThan(0));
-      expect(result.offsetY, closeTo(0.0, 0.001));
+      expect(result.scaleX, closeTo(0.59528, 0.001));
+      expect(result.scaleY, closeTo(0.420945, 0.001));
     });
 
-    test('should add vertical offset for wide images', () {
+    test('should return independent scaleX and scaleY for wide images', () {
       // Image is wider relative to its height than the page
       // e.g., 4000x2000 image on 595.28x841.89 A4 page
       // scaleX = 595.28/4000 = 0.14882
       // scaleY = 841.89/2000 = 0.420945
-      // uniformScale = min(0.14882, 0.420945) = 0.14882
-      // rendered height = 2000 * 0.14882 = 297.64
-      // offsetY = (841.89 - 297.64) / 2 = 272.125
       final result = PdfService.computePageMapping(
         imageWidth: 4000,
         imageHeight: 2000,
@@ -64,12 +56,12 @@ void main() {
         pageHeight: 841.89,
       );
 
-      expect(result.scale, closeTo(0.14882, 0.001));
-      expect(result.offsetX, closeTo(0.0, 0.001));
-      expect(result.offsetY, greaterThan(0));
+      expect(result.scaleX, closeTo(0.14882, 0.001));
+      expect(result.scaleY, closeTo(0.420945, 0.001));
     });
 
-    test('should return scale 1.0 when image dimensions are zero', () {
+    test('should return scale 1.0 on both axes when image dimensions are zero',
+        () {
       final result = PdfService.computePageMapping(
         imageWidth: 0,
         imageHeight: 0,
@@ -77,11 +69,8 @@ void main() {
         pageHeight: 841.89,
       );
 
-      expect(result.scale, 1.0);
-      // With zero-dimension images the centering formula yields half-page
-      // offsets; this is a degenerate case but mathematically consistent.
-      expect(result.offsetX, closeTo(595.28 / 2, 0.001));
-      expect(result.offsetY, closeTo(841.89 / 2, 0.001));
+      expect(result.scaleX, 1.0);
+      expect(result.scaleY, 1.0);
     });
 
     test('should correctly map bounding box coordinates', () {
@@ -94,13 +83,12 @@ void main() {
       );
 
       // Both scale factors are very close: ~0.2400 vs ~0.2400
-      // so offset should be nearly zero
-      expect(result.offsetX, closeTo(0.0, 1.0));
-      expect(result.offsetY, closeTo(0.0, 1.0));
+      expect(result.scaleX, closeTo(0.24003, 0.001));
+      expect(result.scaleY, closeTo(0.24001, 0.001));
 
       // A block at image pixel (100, 200) should map proportionally
-      final mappedLeft = 100.0 * result.scale + result.offsetX;
-      final mappedTop = 200.0 * result.scale + result.offsetY;
+      final mappedLeft = 100.0 * result.scaleX;
+      final mappedTop = 200.0 * result.scaleY;
       expect(mappedLeft, greaterThanOrEqualTo(0));
       expect(mappedTop, greaterThanOrEqualTo(0));
       expect(mappedLeft, lessThanOrEqualTo(595.28));

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -23,27 +22,27 @@ class PdfService {
   /// without overflowing, while still being indexed by PDF search engines.
   static const _invisibleTextFontSize = 12.0;
 
-  /// Computes the uniform scale factor and centering offsets used to map
-  /// OCR bounding-box coordinates from image-pixel space to PDF-point space.
+  /// Computes the per-axis scale factors used to map OCR bounding-box
+  /// coordinates from image-pixel space to PDF-point space.
   ///
-  /// This mirrors the layout produced by [pw.BoxFit.contain]: the image is
-  /// scaled uniformly to fit entirely within the page, and any remaining
-  /// space is split equally on both sides (centering).
+  /// This mirrors the layout produced by [pw.BoxFit.fill]: the image is
+  /// stretched independently on each axis to fill the page exactly, so
+  /// independent X and Y scale factors are required and there are no
+  /// centering offsets.
   ///
-  /// Returns a record of `(uniformScale, offsetX, offsetY)`.
-  static ({double scale, double offsetX, double offsetY})
+  /// Returns a record of `(scaleX, scaleY)`.
+  static ({double scaleX, double scaleY})
       computePageMapping({
     required double imageWidth,
     required double imageHeight,
     required double pageWidth,
     required double pageHeight,
   }) {
-    final scale = (imageWidth > 0 && imageHeight > 0)
-        ? math.min(pageWidth / imageWidth, pageHeight / imageHeight)
-        : 1.0;
-    final offsetX = (pageWidth - imageWidth * scale) / 2;
-    final offsetY = (pageHeight - imageHeight * scale) / 2;
-    return (scale: scale, offsetX: offsetX, offsetY: offsetY);
+    final scaleX =
+        (imageWidth > 0) ? pageWidth / imageWidth : 1.0;
+    final scaleY =
+        (imageHeight > 0) ? pageHeight / imageHeight : 1.0;
+    return (scaleX: scaleX, scaleY: scaleY);
   }
 
   /// Generates a searchable PDF from scanned images and their OCR text blocks.
@@ -86,9 +85,9 @@ class PdfService {
       final pageFormat =
           imgWidth > imgHeight ? PdfPageFormat.a4.landscape : PdfPageFormat.a4;
 
-      // Compute the uniform scale factor matching BoxFit.contain behavior.
-      // The image is scaled uniformly to fit inside the page and centered,
-      // so we must apply the same single scale factor and centering offset
+      // Compute the per-axis scale factors matching BoxFit.fill behavior.
+      // The image is stretched independently on each axis to fill the page,
+      // so we use separate X and Y scale factors (and no centering offsets)
       // to map OCR bounding boxes from image-pixel space to PDF-point space.
       final mapping = computePageMapping(
         imageWidth: imgWidth,
@@ -96,9 +95,8 @@ class PdfService {
         pageWidth: pageFormat.width,
         pageHeight: pageFormat.height,
       );
-      final uniformScale = mapping.scale;
-      final offsetX = mapping.offsetX;
-      final offsetY = mapping.offsetY;
+      final scaleX = mapping.scaleX;
+      final scaleY = mapping.scaleY;
 
       // Get the page's OCR blocks (or empty if no blocks for this page)
       final pageBlocks =
@@ -110,10 +108,11 @@ class PdfService {
           margin: pw.EdgeInsets.zero,
           build: (pw.Context context) {
             return pw.Stack(
+              fit: pw.StackFit.expand,
               children: [
                 // Full-page scanned image as background
                 pw.Positioned.fill(
-                  child: pw.Image(image, fit: pw.BoxFit.contain),
+                  child: pw.Image(image, fit: pw.BoxFit.fill),
                 ),
                 // Invisible OCR text overlay for searchability.
                 // Uses element-level (word) bounding boxes with FittedBox
@@ -128,12 +127,10 @@ class PdfService {
                               element.height > 0,
                         )
                         .map((element) {
-                      final mappedLeft =
-                          element.left * uniformScale + offsetX;
-                      final mappedTop =
-                          element.top * uniformScale + offsetY;
-                      final mappedWidth = element.width * uniformScale;
-                      final mappedHeight = element.height * uniformScale;
+                      final mappedLeft = element.left * scaleX;
+                      final mappedTop = element.top * scaleY;
+                      final mappedWidth = element.width * scaleX;
+                      final mappedHeight = element.height * scaleY;
 
                       return pw.Positioned(
                         left: mappedLeft,
@@ -220,10 +217,11 @@ class PdfService {
           margin: pw.EdgeInsets.zero,
           build: (pw.Context context) {
             return pw.Stack(
+              fit: pw.StackFit.expand,
               children: [
                 // Full-page scanned image as background
                 pw.Positioned.fill(
-                  child: pw.Image(image, fit: pw.BoxFit.contain),
+                  child: pw.Image(image, fit: pw.BoxFit.fill),
                 ),
                 // Invisible edited text overlay for searchability.
                 // Placed as a single block since word-level positions are

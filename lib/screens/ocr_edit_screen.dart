@@ -26,8 +26,6 @@ enum _ResizeHandle { topLeft, topRight, bottomLeft, bottomRight }
 ///   • Tap on empty canvas         → deselect.
 ///   • Drag selected box           → move it.
 ///   • Drag corner handle          → resize the selected box.
-///   • Drag on empty canvas        → draw a new bounding box (text is
-///                                   prompted on release).
 ///   • FAB (+, green)              → add a new box at the page centre.
 ///   • FAB (delete, red)           → delete the selected bounding box.
 ///
@@ -80,10 +78,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   int? _dragLineIdx;
   int? _dragElemIdx;
   Offset? _dragLastPos; // last drag position in Stack (display) coordinates
-
-  // Draw sub-state: drawing a new bounding box.
-  Offset? _drawStart;   // start position in Stack coordinates
-  Offset? _drawCurrent; // current drag position in Stack coordinates
 
   // Selection sub-state: which element is currently selected (for FAB delete).
   int? _selectedPageIdx;
@@ -464,8 +458,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         setState(() {
           _activeResizeHandle = handle;
           _dragLastPos = pos;
-          _drawStart = null;
-          _drawCurrent = null;
           _dragPageIdx = null;
           _dragBlockIdx = null;
           _dragLineIdx = null;
@@ -500,8 +492,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _dragLineIdx = li;
                 _dragElemIdx = ei;
                 _dragLastPos = pos;
-                _drawStart = null;
-                _drawCurrent = null;
               });
             } else {
               // Not yet selected → select it (no move).
@@ -510,8 +500,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _selectedBlockIdx = bi;
                 _selectedLineIdx = li;
                 _selectedElemIdx = ei;
-                _drawStart = null;
-                _drawCurrent = null;
               });
             }
             return;
@@ -520,10 +508,12 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       }
     }
 
-    // 3. Empty canvas → draw mode.
+    // 3. Empty canvas → deselect.
     setState(() {
-      _drawStart = pos;
-      _drawCurrent = pos;
+      _selectedPageIdx = null;
+      _selectedBlockIdx = null;
+      _selectedLineIdx = null;
+      _selectedElemIdx = null;
       _dragPageIdx = null;
       _dragBlockIdx = null;
       _dragLineIdx = null;
@@ -703,18 +693,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             List<OcrTextBlock>.from(_textBlocks[_dragPageIdx!])
               ..[_dragBlockIdx!] = updatedBlock;
       });
-    } else if (_drawStart != null) {
-      // Draw mode: update the preview rect.
-      setState(() => _drawCurrent = pos);
     }
   }
 
-  Future<void> _handleEditPanEnd(
-    int pageIdx,
-    double scale,
-    double offsetX,
-    double offsetY,
-  ) async {
+  void _handleEditPanEnd() {
     if (_activeResizeHandle != null) {
       // Finish resize – clear resize state.
       setState(() {
@@ -730,30 +712,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         _dragElemIdx = null;
         _dragLastPos = null;
       });
-    } else if (_drawStart != null && _drawCurrent != null) {
-      // Finish drawing – create new box if large enough.
-      final drawRect = Rect.fromPoints(_drawStart!, _drawCurrent!);
-      setState(() {
-        _drawStart = null;
-        _drawCurrent = null;
-      });
-
-      if (drawRect.width > 10 && drawRect.height > 10) {
-        final imgLeft = (drawRect.left - offsetX) / scale;
-        final imgTop = (drawRect.top - offsetY) / scale;
-        final imgWidth = drawRect.width / scale;
-        final imgHeight = drawRect.height / scale;
-
-        if (!mounted) return;
-        final text = await showDialog<String>(
-          context: context,
-          builder: (_) => const _EditWordDialog(initialText: ''),
-        );
-
-        if (text != null && text.isNotEmpty && mounted) {
-          _addNewBox(pageIdx, imgLeft, imgTop, imgWidth, imgHeight, text);
-        }
-      }
     }
   }
 
@@ -765,8 +723,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _dragLineIdx = null;
     _dragElemIdx = null;
     _dragLastPos = null;
-    _drawStart = null;
-    _drawCurrent = null;
     _selectedPageIdx = null;
     _selectedBlockIdx = null;
     _selectedLineIdx = null;
@@ -944,7 +900,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                     child: Text(
                       'Tap = select  •  Tap selected = edit text  •  '
                       'Drag selected = move  •  Drag corner handle = resize  •  '
-                      'Drag empty area = new box  •  Tap (+) = add box',
+                      'Tap (+) = add box',
                       style: TextStyle(fontSize: 11, color: Colors.orange),
                     ),
                   ),
@@ -1044,7 +1000,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
               onPanUpdate: (d) =>
                   _handleEditPanUpdate(d.localPosition, scale),
               onPanEnd: (_) =>
-                  _handleEditPanEnd(pageIndex, scale, offsetX, offsetY),
+                  _handleEditPanEnd(),
               child: content,
             );
           }
@@ -1068,12 +1024,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     // Display width/height derived from centering offsets.
     final displayWidth = availableWidth - 2 * offsetX;
     final displayHeight = availableHeight - 2 * offsetY;
-
-    // Draw-preview rect (in Stack coordinates), if active.
-    Rect? drawRect;
-    if (_isEditingBoxes && _drawStart != null && _drawCurrent != null) {
-      drawRect = Rect.fromPoints(_drawStart!, _drawCurrent!);
-    }
 
     return SizedBox(
       width: availableWidth,
@@ -1132,21 +1082,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
               offsetX: offsetX,
               offsetY: offsetY,
             ),
-
-          // Draw-preview rectangle (shown while dragging on empty canvas).
-          if (drawRect != null)
-            Positioned(
-              left: drawRect.left,
-              top: drawRect.top,
-              width: drawRect.width,
-              height: drawRect.height,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.1),
-                  border: Border.all(color: Colors.green, width: 2),
-                ),
-              ),
-            ),
         ],
       ),
     );
@@ -1170,6 +1105,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final elWidth = element.width * scale;
     final elHeight = element.height * scale;
 
+    // Cap handle size at 50 % of the bounding-box height so handles never
+    // obscure the text inside small boxes.
+    final handleSize = math.min(_kHandleVisualSize, elHeight * 0.5);
+
     final corners = [
       Offset(elLeft, elTop),
       Offset(elLeft + elWidth, elTop),
@@ -1179,10 +1118,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
     return corners.map((c) {
       return Positioned(
-        left: c.dx - _kHandleVisualSize / 2,
-        top: c.dy - _kHandleVisualSize / 2,
-        width: _kHandleVisualSize,
-        height: _kHandleVisualSize,
+        left: c.dx - handleSize / 2,
+        top: c.dy - handleSize / 2,
+        width: handleSize,
+        height: handleSize,
         child: Container(
           decoration: const BoxDecoration(
             color: Colors.deepOrange,
@@ -1258,10 +1197,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
     // View mode.
     final decoration = showText
-        ? const BoxDecoration(
-            color: Colors.blue,
-            border: Border.fromBorderSide(BorderSide(color: Colors.blue)),
-          )
+        ? const BoxDecoration()
         : BoxDecoration(
             color: Colors.blue.withOpacity(0.15),
             border: Border.all(

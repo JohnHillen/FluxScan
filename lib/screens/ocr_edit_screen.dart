@@ -1105,7 +1105,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final elWidth = element.width * scale;
     final elHeight = element.height * scale;
 
-    // Cap handle size at 50 % of the bounding-box height so handles never
+    // Cap handle size at 50% of the bounding-box height so handles never
     // obscure the text inside small boxes.
     final handleSize = math.min(_kHandleVisualSize, elHeight * 0.5);
 

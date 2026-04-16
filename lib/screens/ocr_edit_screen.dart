@@ -311,8 +311,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     setState(() {
       _hasChanges = true;
 
-      final clampedLeft = left.clamp(0.0, double.infinity);
-      final clampedTop = top.clamp(0.0, double.infinity);
+      final imgSize = pageIdx < _imageSizes.length
+          ? (_imageSizes[pageIdx] ?? _fallbackImageSize)
+          : _fallbackImageSize;
+      final clampedLeft =
+          left.clamp(0.0, math.max(0.0, imgSize.width - width));
+      final clampedTop =
+          top.clamp(0.0, math.max(0.0, imgSize.height - height));
 
       final newElement = OcrTextElement(
         text: text,
@@ -489,8 +494,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         final el = _textBlocks[_dragPageIdx!][_dragBlockIdx!]
             .lines[_dragLineIdx!]
             .elements[_dragElemIdx!];
-        final newLeft = (el.left + delta.dx / scale).clamp(0.0, double.infinity);
-        final newTop = (el.top + delta.dy / scale).clamp(0.0, double.infinity);
+        final imgSize = _imageSizes[_dragPageIdx!] ?? _fallbackImageSize;
+        final newLeft = (el.left + delta.dx / scale)
+            .clamp(0.0, math.max(0.0, imgSize.width - el.width));
+        final newTop = (el.top + delta.dy / scale)
+            .clamp(0.0, math.max(0.0, imgSize.height - el.height));
 
         final updatedEl = OcrTextElement(
           text: el.text,

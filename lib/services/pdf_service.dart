@@ -7,6 +7,18 @@ import 'package:uuid/uuid.dart';
 
 import 'scanner_service.dart';
 
+/// The original dimensions (in PDF points) of a single document page.
+///
+/// One PDF point equals 1/72 of an inch. For imported PDFs these values
+/// are taken directly from the source document so the generated searchable
+/// PDF can recreate each page at its exact original size.
+class PdfPageDimension {
+  final double width;
+  final double height;
+
+  const PdfPageDimension({required this.width, required this.height});
+}
+
 /// Service responsible for generating searchable PDF documents.
 ///
 /// Creates PDFs where the scanned image is displayed as the page background
@@ -55,12 +67,16 @@ class PdfService {
   /// [imagePaths] - The original or enhanced image file paths (one per page).
   /// [textBlocks] - The OCR text blocks per page, with bounding box positions.
   /// [title] - The document title for PDF metadata.
+  /// [pageDimensions] - Optional original page dimensions in PDF points (one
+  ///   per page). When provided for a given page, that page uses the supplied
+  ///   dimensions instead of A4, preserving the original document layout.
   ///
   /// Returns the file path to the generated PDF.
   Future<String> generateSearchablePdf({
     required List<String> imagePaths,
     required List<List<OcrTextBlock>> textBlocks,
     required String title,
+    List<PdfPageDimension>? pageDimensions,
   }) async {
     final pdf = pw.Document(
       title: title,
@@ -80,10 +96,18 @@ class PdfService {
       final imgWidth = decodedImage.width.toDouble();
       final imgHeight = decodedImage.height.toDouble();
 
-      // Use A4 page format, choosing landscape for landscape images so the
-      // scan fills the page without distortion.
-      final pageFormat =
-          imgWidth > imgHeight ? PdfPageFormat.a4.landscape : PdfPageFormat.a4;
+      // Use the supplied original page dimensions when available so that
+      // imported PDFs keep their exact size. Fall back to A4 for scanned
+      // documents where no dimensions are known in advance, choosing
+      // landscape orientation for landscape images.
+      final PdfPageFormat pageFormat;
+      if (pageDimensions != null && i < pageDimensions.length) {
+        final dims = pageDimensions[i];
+        pageFormat = PdfPageFormat(dims.width, dims.height);
+      } else {
+        pageFormat =
+            imgWidth > imgHeight ? PdfPageFormat.a4.landscape : PdfPageFormat.a4;
+      }
 
       // Compute the per-axis scale factors matching BoxFit.fill behavior.
       // The image is stretched independently on each axis to fill the page,

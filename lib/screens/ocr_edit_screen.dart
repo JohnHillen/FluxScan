@@ -392,9 +392,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     )..layout(maxWidth: double.infinity);
 
     // Convert screen pixels to image coordinate space.
+    // The rendering ratio 0.95 mirrors the TextStyle used in _buildWordOverlay
+    // (fontSize: height * 0.95), so dividing by it gives the required box height.
+    const textRenderRatio = 0.95;
+    const horizontalBoxPadding = 8.0; // extra pixels left + right inside the box
     final scale = _currentScale > 0 ? _currentScale : 1.0;
-    final boxWidth = (textPainter.width + 8) / scale; // +8 px horizontal padding
-    final boxHeight = textPainter.height / scale / 0.95; // inverse of rendering ratio
+    final boxWidth = (textPainter.width + horizontalBoxPadding) / scale;
+    final boxHeight = textPainter.height / scale / textRenderRatio;
 
     // Place box at the centre of the visible viewport (not the PDF centre).
     final screenCX = _currentAvailableWidth / 2;
@@ -826,6 +830,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     setState(() {
       _redoStack.add(_deepCopyBlocks(_textBlocks));
       _textBlocks = _undoStack.removeLast();
+      // When the undo stack is empty we have reverted all session changes and
+      // the current state equals the state at the time the screen was opened,
+      // so there are no unsaved changes.
       _hasChanges = _undoStack.isNotEmpty;
       _clearEditState();
     });

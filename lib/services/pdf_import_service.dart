@@ -53,10 +53,12 @@ class PdfImportService {
 
   /// Renders every page of the PDF at [pdfPath] to a temporary PNG file.
   ///
-  /// Each page is rasterised at [_renderScale] × its native point size,
-  /// yielding approximately 216 DPI images. The RGBA pixel data returned
-  /// by pdfrx is converted to PNG using the `image` package and written
-  /// to the system temporary directory.
+  /// Each page is rasterised at [_renderScale] × its native point size by
+  /// passing `fullWidth`/`fullHeight` to [PdfPage.render], which sets the
+  /// virtual full-page size in pixels (the zoom level). This yields
+  /// approximately 216 DPI images. The RGBA pixel data returned by pdfrx is
+  /// converted to PNG using the `image` package and written to the system
+  /// temporary directory.
   ///
   /// Returns a [PdfImportResult] with the temporary PNG file paths and the
   /// original page dimensions (in PDF points) in page order.
@@ -71,8 +73,6 @@ class PdfImportService {
     try {
       for (var i = 0; i < document.pages.length; i++) {
         final page = document.pages[i];
-        final width = (page.width * _renderScale).toInt();
-        final height = (page.height * _renderScale).toInt();
 
         // Record the original page size in PDF points so that the generated
         // searchable PDF can recreate pages at the exact same dimensions.
@@ -80,7 +80,13 @@ class PdfImportService {
           PdfPageDimension(width: page.width, height: page.height),
         );
 
-        final pdfImage = await page.render(width: width, height: height);
+        // fullWidth/fullHeight set the virtual full-page render size in pixels
+        // (i.e. the zoom level). Omitting width/height returns the complete
+        // page without any sub-area crop.
+        final pdfImage = await page.render(
+          fullWidth: page.width * _renderScale,
+          fullHeight: page.height * _renderScale,
+        );
         if (pdfImage == null) continue;
 
         try {

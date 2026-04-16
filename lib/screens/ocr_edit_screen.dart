@@ -606,6 +606,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         }
 
         // Enforce a minimum size so the box never collapses.
+        // Unit: image pixels (same coordinate space as element.left/top/width/height).
         const minSize = 10.0;
         if (newWidth < minSize) {
           if (_activeResizeHandle == _ResizeHandle.topLeft ||
@@ -1243,6 +1244,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   softWrap: false,
                   style: TextStyle(
                     color: Colors.black,
+                    // height is in logical pixels (same unit as fontSize).
+                    // TextStyle.height: 1 removes ascender/descender padding so
+                    // the rendered cap height fills ~95 % of the container.
                     fontSize: height * 0.95,
                     height: 1,
                   ),
@@ -1277,6 +1281,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
           // In view mode with OCR text visible, render the text at exactly
           // 95 % of the bounding-box height so every word is legible
           // regardless of how narrow the box is.
+          // height and fontSize are both in logical pixels; TextStyle.height: 1
+          // removes ascender/descender padding so the cap height fills the box.
           child: showText && element.text.isNotEmpty
               ? Text(
                   element.text,

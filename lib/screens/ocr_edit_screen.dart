@@ -16,6 +16,14 @@ import '../services/storage_service.dart';
 /// box exactly. Tapping a word overlay opens a dialog to correct its text
 /// while keeping its bounding box unchanged.
 ///
+/// In **box-editing mode** (toggled via the AppBar) the [InteractiveViewer]
+/// pan/zoom is suspended and a dedicated [GestureDetector] takes over:
+///   • Tap on an existing overlay  → edit its text.
+///   • Tap the red × badge        → delete that bounding box.
+///   • Drag an existing overlay   → move it.
+///   • Drag on empty canvas       → draw a new bounding box (text is
+///                                   prompted on release).
+///
 /// When the user saves, the PDF is regenerated using
 /// [PdfService.generateSearchablePdf] so that the exported file continues to
 /// use the word-level FittedBox strategy for precise text highlighting.
@@ -40,8 +48,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   late ScanDocument _document;
 
-  /// Mutable, per-page list of text blocks. Edited in place when the user
-  /// corrects a word; bounding boxes are never modified.
+  /// Mutable, per-page list of text blocks.
   late List<List<OcrTextBlock>> _textBlocks;
 
   /// Cached natural dimensions of each page image, loaded on init.
@@ -51,6 +58,29 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   bool _hasChanges = false;
   bool _isSaving = false;
   bool _showOcrText = false;
+
+  // ---------------------------------------------------------------------------
+  // Box-editing mode state
+  // ---------------------------------------------------------------------------
+
+  /// Whether box-editing mode is active. In this mode InteractiveViewer
+  /// pan/zoom is disabled and the dedicated edit gesture handler is active.
+  bool _isEditingBoxes = false;
+
+  // Move sub-state: which element is currently being dragged.
+  int? _dragPageIdx;
+  int? _dragBlockIdx;
+  int? _dragLineIdx;
+  int? _dragElemIdx;
+  Offset? _dragLastPos; // last drag position in Stack (display) coordinates
+
+  // Draw sub-state: drawing a new bounding box.
+  Offset? _drawStart;   // start position in Stack coordinates
+  Offset? _drawCurrent; // current drag position in Stack coordinates
+
+  // ---------------------------------------------------------------------------
+  // Init / lifecycle
+  // ---------------------------------------------------------------------------
 
   @override
   void initState() {
@@ -159,10 +189,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // Editing logic
+  // Text-editing logic
   // ---------------------------------------------------------------------------
 
-  /// Opens a [showDialog] for the word at [blockIdx]/[lineIdx]/[elemIdx] on
+  /// Opens a dialog for the word at [blockIdx]/[lineIdx]/[elemIdx] on
   /// [pageIdx] and, if the user saves, updates its text in [_textBlocks].
   Future<void> _editElement(
     int pageIdx,
@@ -186,8 +216,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       setState(() {
         _hasChanges = true;
 
-        // Rebuild the element (text only; bounding box unchanged).
-        final updatedElement = element.copyWith(text: result);
+        final updatedElement = OcrTextElement(
+          text: result,
+          left: element.left,
+          top: element.top,
+          width: element.width,
+          height: element.height,
+        );
 
         final line = _textBlocks[pageIdx][blockIdx].lines[lineIdx];
         final updatedElements = List<OcrTextElement>.from(line.elements)
@@ -211,6 +246,349 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Box-editing logic
+  // ---------------------------------------------------------------------------
+
+  /// Deletes the element at [blockIdx]/[lineIdx]/[elemIdx] on [pageIdx].
+  /// Cascades: removes the enclosing line if it becomes empty, and the
+  /// enclosing block if the line removal leaves it empty.
+  void _deleteElement(
+    int pageIdx,
+    int blockIdx,
+    int lineIdx,
+    int elemIdx,
+  ) {
+    setState(() {
+      _hasChanges = true;
+
+      final page = List<OcrTextBlock>.from(_textBlocks[pageIdx]);
+      final block = page[blockIdx];
+      final line = block.lines[lineIdx];
+
+      final updatedElements =
+          List<OcrTextElement>.from(line.elements)..removeAt(elemIdx);
+
+      if (updatedElements.isEmpty) {
+        // Line is now empty – remove it.
+        final updatedLines =
+            List<OcrTextLine>.from(block.lines)..removeAt(lineIdx);
+        if (updatedLines.isEmpty) {
+          // Block is now empty – remove it.
+          page.removeAt(blockIdx);
+        } else {
+          page[blockIdx] = block.copyWith(
+            text: updatedLines.map((l) => l.text).join('\n'),
+            lines: updatedLines,
+          );
+        }
+      } else {
+        final updatedLine = line.copyWith(
+          text: updatedElements.map((e) => e.text).join(' '),
+          elements: updatedElements,
+        );
+        final updatedLines = List<OcrTextLine>.from(block.lines)
+          ..[lineIdx] = updatedLine;
+        page[blockIdx] = block.copyWith(
+          text: updatedLines.map((l) => l.text).join('\n'),
+          lines: updatedLines,
+        );
+      }
+
+      _textBlocks[pageIdx] = page;
+    });
+  }
+
+  /// Adds a new single-element block at the given image coordinates.
+  void _addNewBox(
+    int pageIdx,
+    double left,
+    double top,
+    double width,
+    double height,
+    String text,
+  ) {
+    setState(() {
+      _hasChanges = true;
+
+      final imgSize = pageIdx < _imageSizes.length
+          ? (_imageSizes[pageIdx] ?? _fallbackImageSize)
+          : _fallbackImageSize;
+      final clampedLeft =
+          left.clamp(0.0, math.max(0.0, imgSize.width - width));
+      final clampedTop =
+          top.clamp(0.0, math.max(0.0, imgSize.height - height));
+
+      final newElement = OcrTextElement(
+        text: text,
+        left: clampedLeft,
+        top: clampedTop,
+        width: width,
+        height: height,
+      );
+      final newLine = OcrTextLine(text: text, elements: [newElement]);
+      final newBlock = OcrTextBlock(
+        text: text,
+        left: clampedLeft,
+        top: clampedTop,
+        width: width,
+        height: height,
+        lines: [newLine],
+      );
+
+      while (_textBlocks.length <= pageIdx) {
+        _textBlocks.add([]);
+      }
+      _textBlocks[pageIdx] = [..._textBlocks[pageIdx], newBlock];
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Box-editing gesture handlers
+  // ---------------------------------------------------------------------------
+
+  /// The centre of the delete-badge for [el] in Stack (display) coordinates.
+  Offset _deleteBadgeCenter(
+    OcrTextElement el,
+    double scale,
+    double offsetX,
+    double offsetY,
+  ) {
+    return Offset(
+      el.left * scale + offsetX + el.width * scale, // right edge of box
+      el.top * scale + offsetY,                      // top edge of box
+    );
+  }
+
+  /// Handles a tap in box-editing mode: delete-badge tap → delete;
+  /// tap inside box → edit text.
+  void _handleEditTap(
+    Offset pos,
+    int pageIdx,
+    List<OcrTextBlock> blocks,
+    double scale,
+    double offsetX,
+    double offsetY,
+  ) {
+    const deleteHitRadius = 16.0;
+
+    // 1. Check delete badges (higher priority than box interior).
+    for (var bi = 0; bi < blocks.length; bi++) {
+      for (var li = 0; li < blocks[bi].lines.length; li++) {
+        for (var ei = 0;
+            ei < blocks[bi].lines[li].elements.length;
+            ei++) {
+          final el = blocks[bi].lines[li].elements[ei];
+          final badgeCenter =
+              _deleteBadgeCenter(el, scale, offsetX, offsetY);
+          if ((pos - badgeCenter).distance < deleteHitRadius) {
+            _deleteElement(pageIdx, bi, li, ei);
+            return;
+          }
+        }
+      }
+    }
+
+    // 2. Check box interiors → edit text.
+    for (var bi = 0; bi < blocks.length; bi++) {
+      for (var li = 0; li < blocks[bi].lines.length; li++) {
+        for (var ei = 0;
+            ei < blocks[bi].lines[li].elements.length;
+            ei++) {
+          final el = blocks[bi].lines[li].elements[ei];
+          final boxRect = Rect.fromLTWH(
+            el.left * scale + offsetX,
+            el.top * scale + offsetY,
+            el.width * scale,
+            el.height * scale,
+          );
+          if (boxRect.contains(pos)) {
+            _editElement(pageIdx, bi, li, ei);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  /// Handles pan-start in box-editing mode: determines whether to enter
+  /// move mode (started on a box) or draw mode (started on empty canvas).
+  void _handleEditPanStart(
+    Offset pos,
+    int pageIdx,
+    List<OcrTextBlock> blocks,
+    double scale,
+    double offsetX,
+    double offsetY,
+  ) {
+    const deleteHitRadius = 16.0;
+
+    // Ignore pans that begin on a delete badge (handled by onTapUp).
+    for (var bi = 0; bi < blocks.length; bi++) {
+      for (var li = 0; li < blocks[bi].lines.length; li++) {
+        for (var ei = 0;
+            ei < blocks[bi].lines[li].elements.length;
+            ei++) {
+          final el = blocks[bi].lines[li].elements[ei];
+          if ((_deleteBadgeCenter(el, scale, offsetX, offsetY) - pos)
+                  .distance <
+              deleteHitRadius) {
+            return;
+          }
+        }
+      }
+    }
+
+    // Check if pan starts on a box → move mode.
+    for (var bi = 0; bi < blocks.length; bi++) {
+      for (var li = 0; li < blocks[bi].lines.length; li++) {
+        for (var ei = 0;
+            ei < blocks[bi].lines[li].elements.length;
+            ei++) {
+          final el = blocks[bi].lines[li].elements[ei];
+          final boxRect = Rect.fromLTWH(
+            el.left * scale + offsetX,
+            el.top * scale + offsetY,
+            el.width * scale,
+            el.height * scale,
+          );
+          if (boxRect.contains(pos)) {
+            setState(() {
+              _dragPageIdx = pageIdx;
+              _dragBlockIdx = bi;
+              _dragLineIdx = li;
+              _dragElemIdx = ei;
+              _dragLastPos = pos;
+              _drawStart = null;
+              _drawCurrent = null;
+            });
+            return;
+          }
+        }
+      }
+    }
+
+    // Empty canvas → draw mode.
+    setState(() {
+      _drawStart = pos;
+      _drawCurrent = pos;
+      _dragPageIdx = null;
+      _dragBlockIdx = null;
+      _dragLineIdx = null;
+      _dragElemIdx = null;
+      _dragLastPos = null;
+    });
+  }
+
+  void _handleEditPanUpdate(Offset pos, double scale) {
+    if (_dragElemIdx != null &&
+        _dragPageIdx != null &&
+        _dragBlockIdx != null &&
+        _dragLineIdx != null) {
+      // Move mode: translate the element by the drag delta.
+      final delta = pos - (_dragLastPos ?? pos);
+      setState(() {
+        _hasChanges = true;
+        _dragLastPos = pos;
+
+        final el = _textBlocks[_dragPageIdx!][_dragBlockIdx!]
+            .lines[_dragLineIdx!]
+            .elements[_dragElemIdx!];
+        final imgSize = _imageSizes[_dragPageIdx!] ?? _fallbackImageSize;
+        final newLeft = (el.left + delta.dx / scale)
+            .clamp(0.0, math.max(0.0, imgSize.width - el.width));
+        final newTop = (el.top + delta.dy / scale)
+            .clamp(0.0, math.max(0.0, imgSize.height - el.height));
+
+        final updatedEl = OcrTextElement(
+          text: el.text,
+          left: newLeft,
+          top: newTop,
+          width: el.width,
+          height: el.height,
+        );
+
+        final line = _textBlocks[_dragPageIdx!][_dragBlockIdx!]
+            .lines[_dragLineIdx!];
+        final updatedElements =
+            List<OcrTextElement>.from(line.elements)..[_dragElemIdx!] =
+                updatedEl;
+        final updatedLine = line.copyWith(elements: updatedElements);
+
+        final block = _textBlocks[_dragPageIdx!][_dragBlockIdx!];
+        final updatedLines =
+            List<OcrTextLine>.from(block.lines)..[_dragLineIdx!] =
+                updatedLine;
+        final updatedBlock = block.copyWith(lines: updatedLines);
+
+        _textBlocks[_dragPageIdx!] =
+            List<OcrTextBlock>.from(_textBlocks[_dragPageIdx!])
+              ..[_dragBlockIdx!] = updatedBlock;
+      });
+    } else if (_drawStart != null) {
+      // Draw mode: update the preview rect.
+      setState(() => _drawCurrent = pos);
+    }
+  }
+
+  Future<void> _handleEditPanEnd(
+    int pageIdx,
+    double scale,
+    double offsetX,
+    double offsetY,
+  ) async {
+    if (_dragElemIdx != null) {
+      // Finish move – clear drag state.
+      setState(() {
+        _dragPageIdx = null;
+        _dragBlockIdx = null;
+        _dragLineIdx = null;
+        _dragElemIdx = null;
+        _dragLastPos = null;
+      });
+    } else if (_drawStart != null && _drawCurrent != null) {
+      // Finish drawing – create new box if large enough.
+      final drawRect = Rect.fromPoints(_drawStart!, _drawCurrent!);
+      setState(() {
+        _drawStart = null;
+        _drawCurrent = null;
+      });
+
+      if (drawRect.width > 10 && drawRect.height > 10) {
+        final imgLeft = (drawRect.left - offsetX) / scale;
+        final imgTop = (drawRect.top - offsetY) / scale;
+        final imgWidth = drawRect.width / scale;
+        final imgHeight = drawRect.height / scale;
+
+        if (!mounted) return;
+        final text = await showDialog<String>(
+          context: context,
+          builder: (_) => const _EditWordDialog(initialText: ''),
+        );
+
+        if (text != null && text.isNotEmpty && mounted) {
+          _addNewBox(pageIdx, imgLeft, imgTop, imgWidth, imgHeight, text);
+        }
+      }
+    }
+  }
+
+  /// Clears all transient box-editing state (called on mode toggle and on
+  /// page change).
+  void _clearEditState() {
+    _dragPageIdx = null;
+    _dragBlockIdx = null;
+    _dragLineIdx = null;
+    _dragElemIdx = null;
+    _dragLastPos = null;
+    _drawStart = null;
+    _drawCurrent = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Save
+  // ---------------------------------------------------------------------------
+
   /// Persists the edits: regenerates the PDF with updated word text and
   /// saves the document, then pops the screen returning the updated document.
   Future<void> _saveChanges() async {
@@ -226,8 +604,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
           .map((blocks) => blocks.map((b) => b.text).join('\n'))
           .join(_pageBreakDelimiter);
 
-      // Regenerate with the mutated OcrTextElement list so word-level
-      // bounding boxes (FittedBox strategy) are retained in the PDF.
       final oldPdfPath = _document.pdfPath;
       final newPdfPath = await _pdfService.generateSearchablePdf(
         imagePaths: _document.imagePaths,
@@ -287,6 +663,18 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             tooltip: _showOcrText ? 'Hide OCR text' : 'Show OCR text',
             onPressed: () => setState(() => _showOcrText = !_showOcrText),
           ),
+          IconButton(
+            icon: Icon(
+              Icons.format_shapes,
+              color: _isEditingBoxes ? Colors.orange : null,
+            ),
+            tooltip:
+                _isEditingBoxes ? 'Stop editing boxes' : 'Edit boxes',
+            onPressed: () => setState(() {
+              _isEditingBoxes = !_isEditingBoxes;
+              _clearEditState();
+            }),
+          ),
           if (_isSaving)
             const Padding(
               padding: EdgeInsets.all(16),
@@ -313,10 +701,35 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   Widget _buildPageViewer() {
     return Column(
       children: [
+        // Contextual hint bar shown only in box-editing mode.
+        if (_isEditingBoxes)
+          ColoredBox(
+            color: Colors.orange.shade50,
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: Row(
+                children: const [
+                  Icon(Icons.info_outline, size: 14, color: Colors.orange),
+                  SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'Tap box = edit text  •  Drag box = move  •  '
+                      'Tap × = delete  •  Drag empty area = new box',
+                      style: TextStyle(fontSize: 11, color: Colors.orange),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         Expanded(
           child: PageView.builder(
             itemCount: _document.imagePaths.length,
-            onPageChanged: (index) => setState(() => _currentPage = index),
+            onPageChanged: (index) => setState(() {
+              _currentPage = index;
+              _clearEditState();
+            }),
             itemBuilder: (_, pageIndex) => _buildPage(pageIndex),
           ),
         ),
@@ -334,23 +747,80 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   Widget _buildPage(int pageIndex) {
     final imagePath = _document.imagePaths[pageIndex];
-    final pageBlocks =
-        pageIndex < _textBlocks.length ? _textBlocks[pageIndex] : <OcrTextBlock>[];
-    final imageSize = pageIndex < _imageSizes.length ? _imageSizes[pageIndex] : null;
+    final pageBlocks = pageIndex < _textBlocks.length
+        ? _textBlocks[pageIndex]
+        : <OcrTextBlock>[];
+    final imageSize =
+        pageIndex < _imageSizes.length ? _imageSizes[pageIndex] : null;
 
     return InteractiveViewer(
       minScale: 0.5,
-      maxScale: 4.0,
+      maxScale: 10.0,
+      panEnabled: !_isEditingBoxes,
+      scaleEnabled: !_isEditingBoxes,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          return _buildImageWithOverlays(
+          if (imageSize == null) {
+            return Center(
+              child: Image.file(
+                File(imagePath),
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) =>
+                    const Center(child: Icon(Icons.broken_image, size: 64)),
+              ),
+            );
+          }
+
+          final availableWidth = constraints.maxWidth;
+          final availableHeight = constraints.maxHeight;
+          final scale = math.min(
+            availableWidth / imageSize.width,
+            availableHeight / imageSize.height,
+          );
+          final displayWidth = imageSize.width * scale;
+          final displayHeight = imageSize.height * scale;
+          final offsetX = (availableWidth - displayWidth) / 2;
+          final offsetY = (availableHeight - displayHeight) / 2;
+
+          final content = _buildImageWithOverlays(
             imagePath: imagePath,
             pageBlocks: pageBlocks,
             pageIndex: pageIndex,
-            availableWidth: constraints.maxWidth,
-            availableHeight: constraints.maxHeight,
-            imageSize: imageSize,
+            availableWidth: availableWidth,
+            availableHeight: availableHeight,
+            scale: scale,
+            offsetX: offsetX,
+            offsetY: offsetY,
           );
+
+          if (_isEditingBoxes) {
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapUp: (d) => _handleEditTap(
+                d.localPosition,
+                pageIndex,
+                pageBlocks,
+                scale,
+                offsetX,
+                offsetY,
+              ),
+              onPanStart: (d) => _handleEditPanStart(
+                d.localPosition,
+                pageIndex,
+                pageBlocks,
+                scale,
+                offsetX,
+                offsetY,
+              ),
+              onPanUpdate: (d) =>
+                  _handleEditPanUpdate(d.localPosition, scale),
+              onPanEnd: (_) =>
+                  _handleEditPanEnd(pageIndex, scale, offsetX, offsetY),
+              child: content,
+            );
+          }
+
+          return content;
         },
       ),
     );
@@ -362,38 +832,26 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     required int pageIndex,
     required double availableWidth,
     required double availableHeight,
-    required _ImageSize? imageSize,
+    required double scale,
+    required double offsetX,
+    required double offsetY,
   }) {
-    // Overlay coordinates require image dimensions. Until loaded, show image
-    // without overlays so the user can at least see the page immediately.
-    if (imageSize == null) {
-      return Center(
-        child: Image.file(
-          File(imagePath),
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) =>
-              const Center(child: Icon(Icons.broken_image, size: 64)),
-        ),
-      );
-    }
+    // Display width/height derived from centering offsets.
+    final displayWidth = availableWidth - 2 * offsetX;
+    final displayHeight = availableHeight - 2 * offsetY;
 
-    // Compute BoxFit.contain scale and centering offsets, mirroring
-    // PdfService.computePageMapping so overlays align with the PDF positions.
-    final scale = math.min(
-      availableWidth / imageSize.width,
-      availableHeight / imageSize.height,
-    );
-    final displayWidth = imageSize.width * scale;
-    final displayHeight = imageSize.height * scale;
-    final offsetX = (availableWidth - displayWidth) / 2;
-    final offsetY = (availableHeight - displayHeight) / 2;
+    // Draw-preview rect (in Stack coordinates), if active.
+    Rect? drawRect;
+    if (_isEditingBoxes && _drawStart != null && _drawCurrent != null) {
+      drawRect = Rect.fromPoints(_drawStart!, _drawCurrent!);
+    }
 
     return SizedBox(
       width: availableWidth,
       height: availableHeight,
       child: Stack(
         children: [
-          // Background: document image positioned at the contain-fit location.
+          // Background: document image.
           Positioned(
             left: offsetX,
             top: offsetY,
@@ -407,7 +865,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             ),
           ),
 
-          // Word overlays: one tappable semi-transparent box per element.
+          // Word overlays.
           for (var bi = 0; bi < pageBlocks.length; bi++)
             for (var li = 0; li < pageBlocks[bi].lines.length; li++)
               for (var ei = 0;
@@ -419,8 +877,26 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   offsetX: offsetX,
                   offsetY: offsetY,
                   showText: _showOcrText,
-                  onTap: () => _editElement(pageIndex, bi, li, ei),
+                  isEditMode: _isEditingBoxes,
+                  onTap: _isEditingBoxes
+                      ? null
+                      : () => _editElement(pageIndex, bi, li, ei),
                 ),
+
+          // Draw-preview rectangle (shown while dragging on empty canvas).
+          if (drawRect != null)
+            Positioned(
+              left: drawRect.left,
+              top: drawRect.top,
+              width: drawRect.width,
+              height: drawRect.height,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  border: Border.all(color: Colors.green, width: 2),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -428,23 +904,90 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   /// Builds a single word overlay box.
   ///
-  /// When [showText] is false the box is rendered with a slightly transparent
-  /// blue fill and border so the image underneath remains visible.
-  /// When [showText] is true the box uses a solid (fully opaque) blue
-  /// background and the text is rendered in black for maximum legibility.
+  /// **View mode** (`isEditMode == false`): semi-transparent blue fill with
+  /// border; tapping opens the text-edit dialog.
+  ///
+  /// **Edit mode** (`isEditMode == true`): orange border with a red × badge
+  /// at the top-right corner. The page-level [GestureDetector] (set up in
+  /// [_buildPage]) handles all taps and drags – the overlay itself carries no
+  /// gesture recogniser in this mode.
   Widget _buildWordOverlay({
     required OcrTextElement element,
     required double scale,
     required double offsetX,
     required double offsetY,
     required bool showText,
-    required VoidCallback onTap,
+    required bool isEditMode,
+    required VoidCallback? onTap,
   }) {
     final left = element.left * scale + offsetX;
     final top = element.top * scale + offsetY;
     final width = element.width * scale;
     final height = element.height * scale;
 
+    // The delete badge is centred at the top-right corner of the box.
+    // Its visual size and position must match [_deleteBadgeCenter].
+    const badgeSize = 20.0;
+
+    if (isEditMode) {
+      // Outer Positioned is enlarged to give the badge room to render above
+      // and to the right of the box without being clipped.
+      return Positioned(
+        left: left,
+        top: top - badgeSize / 2,
+        width: width + badgeSize / 2,
+        height: height + badgeSize / 2,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // The bounding-box rectangle.
+            Positioned(
+              left: 0,
+              top: badgeSize / 2,
+              width: width,
+              height: height,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.15),
+                  border: Border.all(color: Colors.orange, width: 1.5),
+                ),
+                child: showText && element.text.isNotEmpty
+                    ? FittedBox(
+                        fit: BoxFit.contain,
+                        alignment: Alignment.center,
+                        child: Text(
+                          element.text,
+                          style: const TextStyle(
+                            color: Colors.black,
+                            height: 1,
+                          ),
+                        ),
+                      )
+                    : null,
+              ),
+            ),
+            // Delete badge – visual only; touch is handled by the page GD.
+            // Centre: (left + width, top) in outer Stack space
+            //       = (width, badgeSize/2) in this inner Stack.
+            Positioned(
+              left: width - badgeSize / 2,
+              top: 0,
+              width: badgeSize,
+              height: badgeSize,
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Colors.red,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.close, size: 12, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // View mode.
     final decoration = showText
         ? const BoxDecoration(
             color: Colors.blue,
@@ -468,7 +1011,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
           decoration: decoration,
           child: showText && element.text.isNotEmpty
               ? FittedBox(
-                  fit: BoxFit.scaleDown,
+                  // BoxFit.contain scales text UP as well as down so the
+                  // rendered text fills the bounding box to ~95 % of its width.
+                  fit: BoxFit.contain,
                   alignment: Alignment.center,
                   child: Text(
                     element.text,

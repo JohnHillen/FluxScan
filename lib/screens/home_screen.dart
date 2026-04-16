@@ -160,7 +160,9 @@ class _HomeScreenState extends State<HomeScreen> {
       _showSnackBar('Processing imported PDF…');
 
       // Step 2: Rasterise each PDF page to a temporary PNG image.
-      tempImagePaths = await _pdfImportService.renderPagesToImages(pdfPath);
+      // The result also carries the original page dimensions in PDF points.
+      final importResult = await _pdfImportService.renderPagesToImages(pdfPath);
+      tempImagePaths = importResult.imagePaths;
       if (tempImagePaths.isEmpty) {
         if (mounted) {
           setState(() => _isScanning = false);
@@ -193,6 +195,7 @@ class _HomeScreenState extends State<HomeScreen> {
         imagePaths: persistentImagePaths,
         textBlocks: processed.textBlocks,
         title: title,
+        pageDimensions: importResult.pageDimensions,
       );
 
       // Step 6: Save the document with the persistent image paths.

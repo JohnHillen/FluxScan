@@ -6,6 +6,22 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:uuid/uuid.dart';
 
+import 'pdf_service.dart';
+
+/// Result returned by [PdfImportService.renderPagesToImages].
+class PdfImportResult {
+  /// Absolute paths to the rasterised PNG files, one per page, in order.
+  final List<String> imagePaths;
+
+  /// Original page dimensions in PDF points, one entry per page.
+  final List<PdfPageDimension> pageDimensions;
+
+  const PdfImportResult({
+    required this.imagePaths,
+    required this.pageDimensions,
+  });
+}
+
 /// Service for importing existing (non-searchable) PDFs.
 ///
 /// Presents a system file picker so the user can select a PDF, then
@@ -38,23 +54,31 @@ class PdfImportService {
   /// Renders every page of the PDF at [pdfPath] to a temporary PNG file.
   ///
   /// Each page is rasterised at [_renderScale] × its native point size,
-  /// yielding approximately 144 DPI images. The RGBA pixel data returned
+  /// yielding approximately 216 DPI images. The RGBA pixel data returned
   /// by pdfrx is converted to PNG using the `image` package and written
   /// to the system temporary directory.
   ///
-  /// Returns the list of temporary PNG file paths in page order.
-  /// The caller is responsible for deleting these files when they are no
+  /// Returns a [PdfImportResult] with the temporary PNG file paths and the
+  /// original page dimensions (in PDF points) in page order.
+  /// The caller is responsible for deleting the image files when they are no
   /// longer needed (see [HomeScreen._importPdf]).
-  Future<List<String>> renderPagesToImages(String pdfPath) async {
+  Future<PdfImportResult> renderPagesToImages(String pdfPath) async {
     final document = await PdfDocument.openFile(pdfPath);
     final tempDir = await getTemporaryDirectory();
     final imagePaths = <String>[];
+    final pageDimensions = <PdfPageDimension>[];
 
     try {
       for (var i = 0; i < document.pages.length; i++) {
         final page = document.pages[i];
         final width = (page.width * _renderScale).toInt();
         final height = (page.height * _renderScale).toInt();
+
+        // Record the original page size in PDF points so that the generated
+        // searchable PDF can recreate pages at the exact same dimensions.
+        pageDimensions.add(
+          PdfPageDimension(width: page.width, height: page.height),
+        );
 
         final pdfImage = await page.render(width: width, height: height);
         if (pdfImage == null) continue;
@@ -82,6 +106,9 @@ class PdfImportService {
       await document.dispose();
     }
 
-    return imagePaths;
+    return PdfImportResult(
+      imagePaths: imagePaths,
+      pageDimensions: pageDimensions,
+    );
   }
 }

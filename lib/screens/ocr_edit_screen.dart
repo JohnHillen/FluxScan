@@ -679,9 +679,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       body: _document.imagePaths.isEmpty
           ? const Center(child: Text('No pages available.'))
           : _buildPageViewer(),
-      floatingActionButton: _isEditingBoxes && _selectedBlockIdx != null
+      floatingActionButton: _isEditingBoxes &&
+              _selectedPageIdx != null &&
+              _selectedBlockIdx != null &&
+              _selectedLineIdx != null &&
+              _selectedElemIdx != null
           ? FloatingActionButton(
               onPressed: () {
+                // Capture indices before clearing selection so they remain
+                // valid when passed to _deleteElement (array positions can
+                // shift after the deletion).
                 final pageIdx = _selectedPageIdx!;
                 final blockIdx = _selectedBlockIdx!;
                 final lineIdx = _selectedLineIdx!;

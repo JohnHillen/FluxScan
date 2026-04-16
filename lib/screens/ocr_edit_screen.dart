@@ -18,11 +18,13 @@ import '../services/storage_service.dart';
 ///
 /// In **box-editing mode** (toggled via the AppBar) the [InteractiveViewer]
 /// pan/zoom is suspended and a dedicated [GestureDetector] takes over:
-///   • Tap on an existing overlay  → edit its text.
-///   • Tap the red × badge        → delete that bounding box.
-///   • Drag an existing overlay   → move it.
-///   • Drag on empty canvas       → draw a new bounding box (text is
-///                                   prompted on release).
+///   • Tap on a box (unselected) → select it (a red delete FAB appears).
+///   • Tap on a box (selected)   → edit its text.
+///   • Tap on empty canvas       → deselect.
+///   • Drag an existing overlay  → move it.
+///   • Drag on empty canvas      → draw a new bounding box (text is
+///                                  prompted on release).
+///   • FAB (delete)              → delete the selected bounding box.
 ///
 /// When the user saves, the PDF is regenerated using
 /// [PdfService.generateSearchablePdf] so that the exported file continues to
@@ -77,6 +79,12 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // Draw sub-state: drawing a new bounding box.
   Offset? _drawStart;   // start position in Stack coordinates
   Offset? _drawCurrent; // current drag position in Stack coordinates
+
+  // Selection sub-state: which element is currently selected (for FAB delete).
+  int? _selectedPageIdx;
+  int? _selectedBlockIdx;
+  int? _selectedLineIdx;
+  int? _selectedElemIdx;
 
   // ---------------------------------------------------------------------------
   // Init / lifecycle
@@ -347,21 +355,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // Box-editing gesture handlers
   // ---------------------------------------------------------------------------
 
-  /// The centre of the delete-badge for [el] in Stack (display) coordinates.
-  Offset _deleteBadgeCenter(
-    OcrTextElement el,
-    double scale,
-    double offsetX,
-    double offsetY,
-  ) {
-    return Offset(
-      el.left * scale + offsetX + el.width * scale, // right edge of box
-      el.top * scale + offsetY,                      // top edge of box
-    );
-  }
-
-  /// Handles a tap in box-editing mode: delete-badge tap → delete;
-  /// tap inside box → edit text.
+  /// Handles a tap in box-editing mode:
+  ///   • Tap on an unselected box  → select it (FAB appears).
+  ///   • Tap on the selected box   → edit its text.
+  ///   • Tap on empty canvas       → deselect.
   void _handleEditTap(
     Offset pos,
     int pageIdx,
@@ -370,26 +367,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double offsetX,
     double offsetY,
   ) {
-    const deleteHitRadius = 16.0;
-
-    // 1. Check delete badges (higher priority than box interior).
-    for (var bi = 0; bi < blocks.length; bi++) {
-      for (var li = 0; li < blocks[bi].lines.length; li++) {
-        for (var ei = 0;
-            ei < blocks[bi].lines[li].elements.length;
-            ei++) {
-          final el = blocks[bi].lines[li].elements[ei];
-          final badgeCenter =
-              _deleteBadgeCenter(el, scale, offsetX, offsetY);
-          if ((pos - badgeCenter).distance < deleteHitRadius) {
-            _deleteElement(pageIdx, bi, li, ei);
-            return;
-          }
-        }
-      }
-    }
-
-    // 2. Check box interiors → edit text.
     for (var bi = 0; bi < blocks.length; bi++) {
       for (var li = 0; li < blocks[bi].lines.length; li++) {
         for (var ei = 0;
@@ -403,12 +380,33 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             el.height * scale,
           );
           if (boxRect.contains(pos)) {
-            _editElement(pageIdx, bi, li, ei);
+            if (_selectedPageIdx == pageIdx &&
+                _selectedBlockIdx == bi &&
+                _selectedLineIdx == li &&
+                _selectedElemIdx == ei) {
+              // Already selected → edit text.
+              _editElement(pageIdx, bi, li, ei);
+            } else {
+              // Select it.
+              setState(() {
+                _selectedPageIdx = pageIdx;
+                _selectedBlockIdx = bi;
+                _selectedLineIdx = li;
+                _selectedElemIdx = ei;
+              });
+            }
             return;
           }
         }
       }
     }
+    // Tapped on empty canvas → deselect.
+    setState(() {
+      _selectedPageIdx = null;
+      _selectedBlockIdx = null;
+      _selectedLineIdx = null;
+      _selectedElemIdx = null;
+    });
   }
 
   /// Handles pan-start in box-editing mode: determines whether to enter
@@ -421,24 +419,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double offsetX,
     double offsetY,
   ) {
-    const deleteHitRadius = 16.0;
-
-    // Ignore pans that begin on a delete badge (handled by onTapUp).
-    for (var bi = 0; bi < blocks.length; bi++) {
-      for (var li = 0; li < blocks[bi].lines.length; li++) {
-        for (var ei = 0;
-            ei < blocks[bi].lines[li].elements.length;
-            ei++) {
-          final el = blocks[bi].lines[li].elements[ei];
-          if ((_deleteBadgeCenter(el, scale, offsetX, offsetY) - pos)
-                  .distance <
-              deleteHitRadius) {
-            return;
-          }
-        }
-      }
-    }
-
     // Check if pan starts on a box → move mode.
     for (var bi = 0; bi < blocks.length; bi++) {
       for (var li = 0; li < blocks[bi].lines.length; li++) {
@@ -583,6 +563,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _dragLastPos = null;
     _drawStart = null;
     _drawCurrent = null;
+    _selectedPageIdx = null;
+    _selectedBlockIdx = null;
+    _selectedLineIdx = null;
+    _selectedElemIdx = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -695,6 +679,26 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       body: _document.imagePaths.isEmpty
           ? const Center(child: Text('No pages available.'))
           : _buildPageViewer(),
+      floatingActionButton: _isEditingBoxes && _selectedBlockIdx != null
+          ? FloatingActionButton(
+              onPressed: () {
+                final pageIdx = _selectedPageIdx!;
+                final blockIdx = _selectedBlockIdx!;
+                final lineIdx = _selectedLineIdx!;
+                final elemIdx = _selectedElemIdx!;
+                setState(() {
+                  _selectedPageIdx = null;
+                  _selectedBlockIdx = null;
+                  _selectedLineIdx = null;
+                  _selectedElemIdx = null;
+                });
+                _deleteElement(pageIdx, blockIdx, lineIdx, elemIdx);
+              },
+              backgroundColor: Colors.red,
+              tooltip: 'Delete selected box',
+              child: const Icon(Icons.delete, color: Colors.white),
+            )
+          : null,
     );
   }
 
@@ -714,8 +718,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   SizedBox(width: 6),
                   Flexible(
                     child: Text(
-                      'Tap box = edit text  •  Drag box = move  •  '
-                      'Tap × = delete  •  Drag empty area = new box',
+                      'Tap = select  •  Tap again = edit  •  '
+                      'Drag = move  •  Drag empty area = new box',
                       style: TextStyle(fontSize: 11, color: Colors.orange),
                     ),
                   ),
@@ -878,6 +882,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   offsetY: offsetY,
                   showText: _showOcrText,
                   isEditMode: _isEditingBoxes,
+                  isSelected: _isEditingBoxes &&
+                      _selectedPageIdx == pageIndex &&
+                      _selectedBlockIdx == bi &&
+                      _selectedLineIdx == li &&
+                      _selectedElemIdx == ei,
                   onTap: _isEditingBoxes
                       ? null
                       : () => _editElement(pageIndex, bi, li, ei),
@@ -907,10 +916,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   /// **View mode** (`isEditMode == false`): semi-transparent blue fill with
   /// border; tapping opens the text-edit dialog.
   ///
-  /// **Edit mode** (`isEditMode == true`): orange border with a red × badge
-  /// at the top-right corner. The page-level [GestureDetector] (set up in
-  /// [_buildPage]) handles all taps and drags – the overlay itself carries no
-  /// gesture recogniser in this mode.
+  /// **Edit mode** (`isEditMode == true`): orange border. When [isSelected]
+  /// is true the box is highlighted with a deeper orange border and fill to
+  /// indicate that it is the active selection (the red delete FAB is shown
+  /// in this state). Tapping a box once selects it; tapping it again edits
+  /// its text. The page-level [GestureDetector] (set up in [_buildPage])
+  /// handles all taps and drags – the overlay itself carries no gesture
+  /// recogniser in edit mode.
   Widget _buildWordOverlay({
     required OcrTextElement element,
     required double scale,
@@ -918,6 +930,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     required double offsetY,
     required bool showText,
     required bool isEditMode,
+    required bool isSelected,
     required VoidCallback? onTap,
   }) {
     final left = element.left * scale + offsetX;
@@ -925,64 +938,35 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final width = element.width * scale;
     final height = element.height * scale;
 
-    // The delete badge is centred at the top-right corner of the box.
-    // Its visual size and position must match [_deleteBadgeCenter].
-    const badgeSize = 20.0;
-
     if (isEditMode) {
-      // Outer Positioned is enlarged to give the badge room to render above
-      // and to the right of the box without being clipped.
       return Positioned(
         left: left,
-        top: top - badgeSize / 2,
-        width: width + badgeSize / 2,
-        height: height + badgeSize / 2,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            // The bounding-box rectangle.
-            Positioned(
-              left: 0,
-              top: badgeSize / 2,
-              width: width,
-              height: height,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity(0.15),
-                  border: Border.all(color: Colors.orange, width: 1.5),
-                ),
-                child: showText && element.text.isNotEmpty
-                    ? FittedBox(
-                        fit: BoxFit.contain,
-                        alignment: Alignment.center,
-                        child: Text(
-                          element.text,
-                          style: const TextStyle(
-                            color: Colors.black,
-                            height: 1,
-                          ),
-                        ),
-                      )
-                    : null,
-              ),
+        top: top,
+        width: width,
+        height: height,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isSelected
+                ? Colors.orange.withOpacity(0.35)
+                : Colors.orange.withOpacity(0.15),
+            border: Border.all(
+              color: isSelected ? Colors.deepOrange : Colors.orange,
+              width: isSelected ? 2.5 : 1.5,
             ),
-            // Delete badge – visual only; touch is handled by the page GD.
-            // Centre: (left + width, top) in outer Stack space
-            //       = (width, badgeSize/2) in this inner Stack.
-            Positioned(
-              left: width - badgeSize / 2,
-              top: 0,
-              width: badgeSize,
-              height: badgeSize,
-              child: Container(
-                decoration: const BoxDecoration(
-                  color: Colors.red,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.close, size: 12, color: Colors.white),
-              ),
-            ),
-          ],
+          ),
+          child: showText && element.text.isNotEmpty
+              ? FittedBox(
+                  fit: BoxFit.contain,
+                  alignment: Alignment.center,
+                  child: Text(
+                    element.text,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      height: 1,
+                    ),
+                  ),
+                )
+              : null,
         ),
       );
     }

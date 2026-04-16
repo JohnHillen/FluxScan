@@ -8,6 +8,9 @@ import '../services/pdf_service.dart';
 import '../services/scanner_service.dart';
 import '../services/storage_service.dart';
 
+/// Corner handles that appear on a selected bounding box to allow resizing.
+enum _ResizeHandle { topLeft, topRight, bottomLeft, bottomRight }
+
 /// Screen for editing the OCR text of a scanned document at the word level.
 ///
 /// Displays each page image inside an [InteractiveViewer] (for pinch-to-zoom
@@ -18,13 +21,15 @@ import '../services/storage_service.dart';
 ///
 /// In **box-editing mode** (toggled via the AppBar) the [InteractiveViewer]
 /// pan/zoom is suspended and a dedicated [GestureDetector] takes over:
-///   • Tap on a box (unselected) → select it (a red delete FAB appears).
-///   • Tap on a box (selected)   → edit its text.
-///   • Tap on empty canvas       → deselect.
-///   • Drag an existing overlay  → move it.
-///   • Drag on empty canvas      → draw a new bounding box (text is
-///                                  prompted on release).
-///   • FAB (delete)              → delete the selected bounding box.
+///   • Tap on a box (unselected)   → select it.
+///   • Tap on a box (selected)     → edit its text.
+///   • Tap on empty canvas         → deselect.
+///   • Drag selected box           → move it.
+///   • Drag corner handle          → resize the selected box.
+///   • Drag on empty canvas        → draw a new bounding box (text is
+///                                   prompted on release).
+///   • FAB (+, green)              → add a new box at the page centre.
+///   • FAB (delete, red)           → delete the selected bounding box.
 ///
 /// When the user saves, the PDF is regenerated using
 /// [PdfService.generateSearchablePdf] so that the exported file continues to
@@ -85,6 +90,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   int? _selectedBlockIdx;
   int? _selectedLineIdx;
   int? _selectedElemIdx;
+
+  // Resize sub-state: active corner handle being dragged.
+  _ResizeHandle? _activeResizeHandle;
 
   // ---------------------------------------------------------------------------
   // Init / lifecycle
@@ -319,26 +327,18 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     setState(() {
       _hasChanges = true;
 
-      final imgSize = pageIdx < _imageSizes.length
-          ? (_imageSizes[pageIdx] ?? _fallbackImageSize)
-          : _fallbackImageSize;
-      final clampedLeft =
-          left.clamp(0.0, math.max(0.0, imgSize.width - width)).toDouble();
-      final clampedTop =
-          top.clamp(0.0, math.max(0.0, imgSize.height - height)).toDouble();
-
       final newElement = OcrTextElement(
         text: text,
-        left: clampedLeft,
-        top: clampedTop,
+        left: left,
+        top: top,
         width: width,
         height: height,
       );
       final newLine = OcrTextLine(text: text, elements: [newElement]);
       final newBlock = OcrTextBlock(
         text: text,
-        left: clampedLeft,
-        top: clampedTop,
+        left: left,
+        top: top,
         width: width,
         height: height,
         lines: [newLine],
@@ -349,6 +349,32 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       }
       _textBlocks[pageIdx] = [..._textBlocks[pageIdx], newBlock];
     });
+  }
+
+  /// Adds a new bounding box at the centre of the current page image and
+  /// prompts the user to enter text.
+  Future<void> _addBoxAtCenter() async {
+    if (!mounted) return;
+
+    final text = await showDialog<String>(
+      context: context,
+      builder: (_) => const _EditWordDialog(initialText: ''),
+    );
+
+    if (text == null || text.isEmpty || !mounted) return;
+
+    final pageIdx = _currentPage;
+    final imgSize = pageIdx < _imageSizes.length
+        ? (_imageSizes[pageIdx] ?? _fallbackImageSize)
+        : _fallbackImageSize;
+
+    // Default box: 30 % of image width, 5 % of image height, centred.
+    final boxWidth = imgSize.width * 0.30;
+    final boxHeight = imgSize.height * 0.05;
+    final left = (imgSize.width - boxWidth) / 2;
+    final top = (imgSize.height - boxHeight) / 2;
+
+    _addNewBox(pageIdx, left, top, boxWidth, boxHeight, text);
   }
 
   // ---------------------------------------------------------------------------
@@ -410,7 +436,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   }
 
   /// Handles pan-start in box-editing mode: determines whether to enter
-  /// move mode (started on a box) or draw mode (started on empty canvas).
+  /// resize mode (started on a corner handle of the selected box), move mode
+  /// (started on the already-selected box), select mode (started on a
+  /// different unselected box), or draw mode (started on empty canvas).
   void _handleEditPanStart(
     Offset pos,
     int pageIdx,
@@ -419,7 +447,35 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double offsetX,
     double offsetY,
   ) {
-    // Check if pan starts on a box → move mode.
+    // 1. Check resize handles of the currently selected element first.
+    if (_selectedPageIdx == pageIdx &&
+        _selectedBlockIdx != null &&
+        _selectedLineIdx != null &&
+        _selectedElemIdx != null) {
+      final sel = blocks[_selectedBlockIdx!]
+          .lines[_selectedLineIdx!]
+          .elements[_selectedElemIdx!];
+      final selLeft = sel.left * scale + offsetX;
+      final selTop = sel.top * scale + offsetY;
+      final selWidth = sel.width * scale;
+      final selHeight = sel.height * scale;
+      final handle = _hitTestResizeHandle(pos, selLeft, selTop, selWidth, selHeight);
+      if (handle != null) {
+        setState(() {
+          _activeResizeHandle = handle;
+          _dragLastPos = pos;
+          _drawStart = null;
+          _drawCurrent = null;
+          _dragPageIdx = null;
+          _dragBlockIdx = null;
+          _dragLineIdx = null;
+          _dragElemIdx = null;
+        });
+        return;
+      }
+    }
+
+    // 2. Check if pan starts on a box.
     for (var bi = 0; bi < blocks.length; bi++) {
       for (var li = 0; li < blocks[bi].lines.length; li++) {
         for (var ei = 0;
@@ -433,22 +489,38 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             el.height * scale,
           );
           if (boxRect.contains(pos)) {
-            setState(() {
-              _dragPageIdx = pageIdx;
-              _dragBlockIdx = bi;
-              _dragLineIdx = li;
-              _dragElemIdx = ei;
-              _dragLastPos = pos;
-              _drawStart = null;
-              _drawCurrent = null;
-            });
+            if (_selectedPageIdx == pageIdx &&
+                _selectedBlockIdx == bi &&
+                _selectedLineIdx == li &&
+                _selectedElemIdx == ei) {
+              // Already selected → enter move mode.
+              setState(() {
+                _dragPageIdx = pageIdx;
+                _dragBlockIdx = bi;
+                _dragLineIdx = li;
+                _dragElemIdx = ei;
+                _dragLastPos = pos;
+                _drawStart = null;
+                _drawCurrent = null;
+              });
+            } else {
+              // Not yet selected → select it (no move).
+              setState(() {
+                _selectedPageIdx = pageIdx;
+                _selectedBlockIdx = bi;
+                _selectedLineIdx = li;
+                _selectedElemIdx = ei;
+                _drawStart = null;
+                _drawCurrent = null;
+              });
+            }
             return;
           }
         }
       }
     }
 
-    // Empty canvas → draw mode.
+    // 3. Empty canvas → draw mode.
     setState(() {
       _drawStart = pos;
       _drawCurrent = pos;
@@ -460,8 +532,127 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     });
   }
 
+  /// Returns the [_ResizeHandle] whose hit-area contains [pos], or null.
+  ///
+  /// Each corner is represented by a [_kHandleHitSize]×[_kHandleHitSize]
+  /// square centred on the corner point of the box described by
+  /// [left], [top], [width], [height] (all in display / Stack coordinates).
+  static const double _kHandleHitSize = 24.0;
+
+  static _ResizeHandle? _hitTestResizeHandle(
+    Offset pos,
+    double left,
+    double top,
+    double width,
+    double height,
+  ) {
+    const h = _kHandleHitSize / 2;
+    final corners = {
+      _ResizeHandle.topLeft: Offset(left, top),
+      _ResizeHandle.topRight: Offset(left + width, top),
+      _ResizeHandle.bottomLeft: Offset(left, top + height),
+      _ResizeHandle.bottomRight: Offset(left + width, top + height),
+    };
+    for (final entry in corners.entries) {
+      final rect = Rect.fromCenter(center: entry.value, width: h * 2, height: h * 2);
+      if (rect.contains(pos)) return entry.key;
+    }
+    return null;
+  }
+
   void _handleEditPanUpdate(Offset pos, double scale) {
-    if (_dragElemIdx != null &&
+    if (_activeResizeHandle != null &&
+        _selectedPageIdx != null &&
+        _selectedBlockIdx != null &&
+        _selectedLineIdx != null &&
+        _selectedElemIdx != null) {
+      // Resize mode: adjust element dimensions according to the dragged corner.
+      final delta = pos - (_dragLastPos ?? pos);
+      setState(() {
+        _hasChanges = true;
+        _dragLastPos = pos;
+
+        final pageIdx = _selectedPageIdx!;
+        final blockIdx = _selectedBlockIdx!;
+        final lineIdx = _selectedLineIdx!;
+        final elemIdx = _selectedElemIdx!;
+
+        final el = _textBlocks[pageIdx][blockIdx].lines[lineIdx].elements[elemIdx];
+        final dx = delta.dx / scale;
+        final dy = delta.dy / scale;
+
+        double newLeft = el.left;
+        double newTop = el.top;
+        double newWidth = el.width;
+        double newHeight = el.height;
+
+        switch (_activeResizeHandle!) {
+          case _ResizeHandle.topLeft:
+            newLeft = el.left + dx;
+            newTop = el.top + dy;
+            newWidth = el.width - dx;
+            newHeight = el.height - dy;
+          case _ResizeHandle.topRight:
+            newTop = el.top + dy;
+            newWidth = el.width + dx;
+            newHeight = el.height - dy;
+          case _ResizeHandle.bottomLeft:
+            newLeft = el.left + dx;
+            newWidth = el.width - dx;
+            newHeight = el.height + dy;
+          case _ResizeHandle.bottomRight:
+            newWidth = el.width + dx;
+            newHeight = el.height + dy;
+        }
+
+        // Enforce a minimum size so the box never collapses.
+        const minSize = 10.0;
+        if (newWidth < minSize) {
+          if (_activeResizeHandle == _ResizeHandle.topLeft ||
+              _activeResizeHandle == _ResizeHandle.bottomLeft) {
+            newLeft = el.left + el.width - minSize;
+          }
+          newWidth = minSize;
+        }
+        if (newHeight < minSize) {
+          if (_activeResizeHandle == _ResizeHandle.topLeft ||
+              _activeResizeHandle == _ResizeHandle.topRight) {
+            newTop = el.top + el.height - minSize;
+          }
+          newHeight = minSize;
+        }
+
+        final updatedEl = OcrTextElement(
+          text: el.text,
+          left: newLeft,
+          top: newTop,
+          width: newWidth,
+          height: newHeight,
+        );
+
+        final line = _textBlocks[pageIdx][blockIdx].lines[lineIdx];
+        final updatedElements =
+            List<OcrTextElement>.from(line.elements)..[elemIdx] = updatedEl;
+        final updatedLine = line.copyWith(elements: updatedElements);
+
+        final block = _textBlocks[pageIdx][blockIdx];
+        final updatedLines =
+            List<OcrTextLine>.from(block.lines)..[lineIdx] = updatedLine;
+
+        // Rebuild the block with updated geometry.
+        final updatedBlock = OcrTextBlock(
+          text: block.text,
+          left: newLeft,
+          top: newTop,
+          width: newWidth,
+          height: newHeight,
+          lines: updatedLines,
+        );
+
+        _textBlocks[pageIdx] =
+            List<OcrTextBlock>.from(_textBlocks[pageIdx])..[blockIdx] = updatedBlock;
+      });
+    } else if (_dragElemIdx != null &&
         _dragPageIdx != null &&
         _dragBlockIdx != null &&
         _dragLineIdx != null) {
@@ -474,11 +665,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         final el = _textBlocks[_dragPageIdx!][_dragBlockIdx!]
             .lines[_dragLineIdx!]
             .elements[_dragElemIdx!];
-        final imgSize = _imageSizes[_dragPageIdx!] ?? _fallbackImageSize;
-        final newLeft = (el.left + delta.dx / scale)
-            .clamp(0.0, math.max(0.0, imgSize.width - el.width)).toDouble();
-        final newTop = (el.top + delta.dy / scale)
-            .clamp(0.0, math.max(0.0, imgSize.height - el.height)).toDouble();
+        final newLeft = el.left + delta.dx / scale;
+        final newTop = el.top + delta.dy / scale;
 
         final updatedEl = OcrTextElement(
           text: el.text,
@@ -499,7 +687,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         final updatedLines =
             List<OcrTextLine>.from(block.lines)..[_dragLineIdx!] =
                 updatedLine;
-        final updatedBlock = block.copyWith(lines: updatedLines);
+
+        // Rebuild block with updated position.
+        final updatedBlock = OcrTextBlock(
+          text: block.text,
+          left: newLeft,
+          top: newTop,
+          width: block.width,
+          height: block.height,
+          lines: updatedLines,
+        );
 
         _textBlocks[_dragPageIdx!] =
             List<OcrTextBlock>.from(_textBlocks[_dragPageIdx!])
@@ -517,7 +714,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double offsetX,
     double offsetY,
   ) async {
-    if (_dragElemIdx != null) {
+    if (_activeResizeHandle != null) {
+      // Finish resize – clear resize state.
+      setState(() {
+        _activeResizeHandle = null;
+        _dragLastPos = null;
+      });
+    } else if (_dragElemIdx != null) {
       // Finish move – clear drag state.
       setState(() {
         _dragPageIdx = null;
@@ -567,6 +770,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _selectedBlockIdx = null;
     _selectedLineIdx = null;
     _selectedElemIdx = null;
+    _activeResizeHandle = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -679,31 +883,43 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       body: _document.imagePaths.isEmpty
           ? const Center(child: Text('No pages available.'))
           : _buildPageViewer(),
-      floatingActionButton: _isEditingBoxes &&
-              _selectedPageIdx != null &&
-              _selectedBlockIdx != null &&
-              _selectedLineIdx != null &&
-              _selectedElemIdx != null
-          ? FloatingActionButton(
-              onPressed: () {
-                // Capture indices before clearing selection so they remain
-                // valid when passed to _deleteElement (array positions can
-                // shift after the deletion).
-                final pageIdx = _selectedPageIdx!;
-                final blockIdx = _selectedBlockIdx!;
-                final lineIdx = _selectedLineIdx!;
-                final elemIdx = _selectedElemIdx!;
-                setState(() {
-                  _selectedPageIdx = null;
-                  _selectedBlockIdx = null;
-                  _selectedLineIdx = null;
-                  _selectedElemIdx = null;
-                });
-                _deleteElement(pageIdx, blockIdx, lineIdx, elemIdx);
-              },
-              backgroundColor: Colors.red,
-              tooltip: 'Delete selected box',
-              child: const Icon(Icons.delete, color: Colors.white),
+      floatingActionButton: _isEditingBoxes
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_selectedPageIdx != null &&
+                    _selectedBlockIdx != null &&
+                    _selectedLineIdx != null &&
+                    _selectedElemIdx != null) ...[
+                  FloatingActionButton(
+                    heroTag: 'fab_delete',
+                    onPressed: () {
+                      final pageIdx = _selectedPageIdx!;
+                      final blockIdx = _selectedBlockIdx!;
+                      final lineIdx = _selectedLineIdx!;
+                      final elemIdx = _selectedElemIdx!;
+                      setState(() {
+                        _selectedPageIdx = null;
+                        _selectedBlockIdx = null;
+                        _selectedLineIdx = null;
+                        _selectedElemIdx = null;
+                      });
+                      _deleteElement(pageIdx, blockIdx, lineIdx, elemIdx);
+                    },
+                    backgroundColor: Colors.red,
+                    tooltip: 'Delete selected box',
+                    child: const Icon(Icons.delete, color: Colors.white),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                FloatingActionButton(
+                  heroTag: 'fab_add',
+                  onPressed: _addBoxAtCenter,
+                  backgroundColor: Colors.green,
+                  tooltip: 'Add new bounding box',
+                  child: const Icon(Icons.add, color: Colors.white),
+                ),
+              ],
             )
           : null,
     );
@@ -725,8 +941,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   SizedBox(width: 6),
                   Flexible(
                     child: Text(
-                      'Tap = select  •  Tap again = edit  •  '
-                      'Drag = move  •  Drag empty area = new box',
+                      'Tap = select  •  Tap selected = edit text  •  '
+                      'Drag selected = move  •  Drag corner handle = resize  •  '
+                      'Drag empty area = new box  •  Tap (+) = add box',
                       style: TextStyle(fontSize: 11, color: Colors.orange),
                     ),
                   ),
@@ -765,8 +982,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         pageIndex < _imageSizes.length ? _imageSizes[pageIndex] : null;
 
     return InteractiveViewer(
-      minScale: 0.5,
-      maxScale: 10.0,
+      minScale: 0.01,
+      maxScale: double.infinity,
       panEnabled: !_isEditingBoxes,
       scaleEnabled: !_isEditingBoxes,
       child: LayoutBuilder(
@@ -899,6 +1116,22 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                       : () => _editElement(pageIndex, bi, li, ei),
                 ),
 
+          // Resize handles for the selected element.
+          if (_isEditingBoxes &&
+              _selectedPageIdx == pageIndex &&
+              _selectedBlockIdx != null &&
+              _selectedLineIdx != null &&
+              _selectedElemIdx != null &&
+              _selectedBlockIdx! < pageBlocks.length)
+            ..._buildResizeHandles(
+              element: pageBlocks[_selectedBlockIdx!]
+                  .lines[_selectedLineIdx!]
+                  .elements[_selectedElemIdx!],
+              scale: scale,
+              offsetX: offsetX,
+              offsetY: offsetY,
+            ),
+
           // Draw-preview rectangle (shown while dragging on empty canvas).
           if (drawRect != null)
             Positioned(
@@ -916,6 +1149,47 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         ],
       ),
     );
+  }
+
+  /// Builds four corner resize-handle widgets for the given [element].
+  ///
+  /// Each handle is a small filled circle rendered at a corner of the
+  /// selected bounding box. The page-level [GestureDetector] detects drags
+  /// that start inside a handle's hit area (see [_hitTestResizeHandle]).
+  static const double _kHandleVisualSize = 12.0;
+
+  List<Widget> _buildResizeHandles({
+    required OcrTextElement element,
+    required double scale,
+    required double offsetX,
+    required double offsetY,
+  }) {
+    final elLeft = element.left * scale + offsetX;
+    final elTop = element.top * scale + offsetY;
+    final elWidth = element.width * scale;
+    final elHeight = element.height * scale;
+
+    final corners = [
+      Offset(elLeft, elTop),
+      Offset(elLeft + elWidth, elTop),
+      Offset(elLeft, elTop + elHeight),
+      Offset(elLeft + elWidth, elTop + elHeight),
+    ];
+
+    return corners.map((c) {
+      return Positioned(
+        left: c.dx - _kHandleVisualSize / 2,
+        top: c.dy - _kHandleVisualSize / 2,
+        width: _kHandleVisualSize,
+        height: _kHandleVisualSize,
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.deepOrange,
+            shape: BoxShape.circle,
+          ),
+        ),
+      );
+    }).toList();
   }
 
   /// Builds a single word overlay box.
@@ -962,15 +1236,15 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             ),
           ),
           child: showText && element.text.isNotEmpty
-              ? FittedBox(
-                  fit: BoxFit.contain,
-                  alignment: Alignment.center,
-                  child: Text(
-                    element.text,
-                    style: const TextStyle(
-                      color: Colors.black,
-                      height: 1,
-                    ),
+              ? Text(
+                  element.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.clip,
+                  softWrap: false,
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: height * 0.95,
+                    height: 1,
                   ),
                 )
               : null,
@@ -1000,18 +1274,19 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         onTap: onTap,
         child: Container(
           decoration: decoration,
+          // In view mode with OCR text visible, render the text at exactly
+          // 95 % of the bounding-box height so every word is legible
+          // regardless of how narrow the box is.
           child: showText && element.text.isNotEmpty
-              ? FittedBox(
-                  // BoxFit.contain scales text UP as well as down so the
-                  // rendered text fills the bounding box to ~95 % of its width.
-                  fit: BoxFit.contain,
-                  alignment: Alignment.center,
-                  child: Text(
-                    element.text,
-                    style: const TextStyle(
-                      color: Colors.black,
-                      height: 1,
-                    ),
+              ? Text(
+                  element.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.clip,
+                  softWrap: false,
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: height * 0.95,
+                    height: 1,
                   ),
                 )
               : null,

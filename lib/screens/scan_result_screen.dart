@@ -175,8 +175,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           itemBuilder: (context, index) {
             final imagePath = _document.imagePaths[index];
             return InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4.0,
+              minScale: 0.01,
+              maxScale: double.infinity,
               child: Center(
                 child: Padding(
                   padding: const EdgeInsets.all(16),

@@ -560,7 +560,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         if (_undoStack.length > _editModeUndoStackSize) {
           _undoStack.removeRange(_editModeUndoStackSize, _undoStack.length);
         }
-        _hasChanges = _editModeUndoStackSize > 0;
+        // After truncation, _undoStack reflects exactly the changes that
+        // existed before entering edit mode.
+        _hasChanges = _undoStack.isNotEmpty;
       }
       _editModeUndoStackSize = 0;
       _boxEditMode = false;

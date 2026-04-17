@@ -12,6 +12,13 @@ import '../services/storage_service.dart';
 /// Corner handles that appear on a selected bounding box to allow resizing.
 enum _ResizeHandle { topLeft, topRight, bottomLeft, bottomRight }
 
+/// Active FAB interaction mode.
+///
+/// [move]  – any single-finger drag moves the selected element.
+/// [scale] – only resize-handle drags are accepted (handles use a larger
+///           hit area so they are easier to grab).
+enum _FabMode { move, scale }
+
 /// Actions available in the unsaved-changes dialog.
 enum _UnsavedChangesAction { save, discard, cancel }
 
@@ -95,6 +102,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // ---------------------------------------------------------------------------
   // Box-editing state (always active)
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // FAB interaction mode
+  // ---------------------------------------------------------------------------
+
+  /// Currently active FAB mode (move / scale) or null for default behaviour.
+  _FabMode? _activeFabMode;
+
+  /// True while a single-finger drag is panning the image (not editing a box).
+  bool _isImagePanning = false;
 
   // Move sub-state: which element is currently being dragged.
   int? _dragPageIdx;
@@ -509,7 +526,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   /// Handles pan-start in box-editing mode: determines whether to enter
   /// resize mode (started on a corner handle of the selected box), move mode
   /// (started on the already-selected box), select mode (started on a
-  /// different unselected box), or draw mode (started on empty canvas).
+  /// different unselected box), image-pan mode (started on empty canvas), or
+  /// – when a FAB mode is active – the corresponding FAB-mode behaviour.
   void _handleEditPanStart(
     Offset pos,
     int pageIdx,
@@ -518,6 +536,59 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double offsetX,
     double offsetY,
   ) {
+    // 0a. FAB move mode: any drag immediately moves the selected element.
+    if (_activeFabMode == _FabMode.move &&
+        _selectedPageIdx == pageIdx &&
+        _selectedBlockIdx != null &&
+        _selectedLineIdx != null &&
+        _selectedElemIdx != null) {
+      _pushUndo();
+      setState(() {
+        _dragPageIdx = pageIdx;
+        _dragBlockIdx = _selectedBlockIdx;
+        _dragLineIdx = _selectedLineIdx;
+        _dragElemIdx = _selectedElemIdx;
+        _dragLastPos = pos;
+      });
+      return;
+    }
+
+    // 0b. FAB scale mode: only resize-handle drags are accepted (larger hit
+    //     area).  Any drag that does not start on a handle is silently ignored.
+    if (_activeFabMode == _FabMode.scale &&
+        _selectedPageIdx == pageIdx &&
+        _selectedBlockIdx != null &&
+        _selectedLineIdx != null &&
+        _selectedElemIdx != null) {
+      final sel = blocks[_selectedBlockIdx!]
+          .lines[_selectedLineIdx!]
+          .elements[_selectedElemIdx!];
+      final selLeft = sel.left * scale + offsetX;
+      final selTop = sel.top * scale + offsetY;
+      final selWidth = sel.width * scale;
+      final selHeight = sel.height * scale;
+      final handle = _hitTestResizeHandle(
+        pos,
+        selLeft,
+        selTop,
+        selWidth,
+        selHeight,
+        hitSize: _kHandleHitSizeScaleMode,
+      );
+      if (handle != null) {
+        _pushUndo();
+        setState(() {
+          _activeResizeHandle = handle;
+          _dragLastPos = pos;
+          _dragPageIdx = null;
+          _dragBlockIdx = null;
+          _dragLineIdx = null;
+          _dragElemIdx = null;
+        });
+      }
+      return;
+    }
+
     // 1. Check resize handles of the currently selected element first.
     if (_selectedPageIdx == pageIdx &&
         _selectedBlockIdx != null &&
@@ -587,7 +658,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       }
     }
 
-    // 3. Empty canvas → deselect.
+    // 3. Empty canvas → deselect and start image pan.
+    _isImagePanning = true;
     setState(() {
       _selectedPageIdx = null;
       _selectedBlockIdx = null;
@@ -603,19 +675,27 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   /// Returns the [_ResizeHandle] whose hit-area contains [pos], or null.
   ///
-  /// Each corner is represented by a [_kHandleHitSize]×[_kHandleHitSize]
-  /// square centred on the corner point of the box described by
-  /// [left], [top], [width], [height] (all in display / Stack coordinates).
+  /// Each corner is represented by a [hitSize]×[hitSize] square centred on the
+  /// corner point of the box described by [left], [top], [width], [height] (all
+  /// in display / Stack coordinates).  The default [hitSize] is
+  /// [_kHandleHitSize]; pass [_kHandleHitSizeScaleMode] for a larger target
+  /// when the scale FAB mode is active.
   static const double _kHandleHitSize = 24.0;
+  static const double _kHandleHitSizeScaleMode = 48.0;
+
+  /// Fraction of the overlay height used as the OCR text font size.
+  /// 80 % leaves a small top/bottom margin so descenders are not clipped.
+  static const double _kOcrTextHeightRatio = 0.80;
 
   static _ResizeHandle? _hitTestResizeHandle(
     Offset pos,
     double left,
     double top,
     double width,
-    double height,
-  ) {
-    const h = _kHandleHitSize / 2;
+    double height, {
+    double hitSize = _kHandleHitSize,
+  }) {
+    final h = hitSize / 2;
     final corners = {
       _ResizeHandle.topLeft: Offset(left, top),
       _ResizeHandle.topRight: Offset(left + width, top),
@@ -630,6 +710,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   }
 
   void _handleEditPanUpdate(Offset pos, double scale) {
+    // Image pan mode: translate the viewport via TransformationController.
+    if (_isImagePanning) {
+      final delta = pos - (_dragLastPos ?? pos);
+      _dragLastPos = pos;
+      final matrix = _transformationController.value.clone();
+      matrix.translate(delta.dx, delta.dy);
+      _transformationController.value = matrix;
+      return;
+    }
+
     if (_activeResizeHandle != null &&
         _selectedPageIdx != null &&
         _selectedBlockIdx != null &&
@@ -776,6 +866,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   }
 
   void _handleEditPanEnd() {
+    if (_isImagePanning) {
+      _isImagePanning = false;
+      _dragLastPos = null;
+      return;
+    }
     if (_activeResizeHandle != null) {
       // Finish resize – clear resize state.
       setState(() {
@@ -806,6 +901,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _selectedLineIdx = null;
     _selectedElemIdx = null;
     _activeResizeHandle = null;
+    _activeFabMode = null;
+    _isImagePanning = false;
     _activePointerPositions.clear();
     _panGestureDownPosition = null;
     _panGestureActive = false;
@@ -1055,30 +1152,35 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
               FloatingActionButton.small(
                 heroTag: 'fab_move',
                 onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Ausgewählte Box ziehen zum Verschieben'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
+                  setState(() {
+                    _activeFabMode =
+                        _activeFabMode == _FabMode.move ? null : _FabMode.move;
+                  });
                 },
-                backgroundColor: Colors.blue.shade700,
-                tooltip: 'Verschieben (Box ziehen)',
+                backgroundColor: _activeFabMode == _FabMode.move
+                    ? Colors.orange
+                    : Colors.blue.shade700,
+                tooltip: _activeFabMode == _FabMode.move
+                    ? 'Verschieben aktiv – Box ziehen'
+                    : 'Verschieben aktivieren',
                 child: const Icon(Icons.open_with, color: Colors.white),
               ),
               const SizedBox(height: 8),
               FloatingActionButton.small(
                 heroTag: 'fab_scale',
                 onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Eckpunkte ziehen zum Skalieren'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
+                  setState(() {
+                    _activeFabMode = _activeFabMode == _FabMode.scale
+                        ? null
+                        : _FabMode.scale;
+                  });
                 },
-                backgroundColor: Colors.blue.shade700,
-                tooltip: 'Skalieren (Eckpunkte ziehen)',
+                backgroundColor: _activeFabMode == _FabMode.scale
+                    ? Colors.orange
+                    : Colors.blue.shade700,
+                tooltip: _activeFabMode == _FabMode.scale
+                    ? 'Skalieren aktiv – Eckpunkte ziehen'
+                    : 'Skalieren aktivieren',
                 child: const Icon(Icons.crop_free, color: Colors.white),
               ),
               const SizedBox(height: 8),
@@ -1172,7 +1274,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     return InteractiveViewer(
       transformationController: _transformationController,
       minScale: 0.5,
-      maxScale: 8.0,
+      maxScale: double.infinity,
       panEnabled: false,
       scaleEnabled: true,
       child: LayoutBuilder(
@@ -1418,10 +1520,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   /// Builds a single word overlay box.
   ///
-  /// Unselected boxes: semi-transparent blue fill with 1 px blue border.
-  /// Selected box: deeper blue fill + 2.5 px indigo border.
+  /// Unselected boxes: semi-transparent blue fill, no border.
+  /// Selected box: deeper blue fill, no border.
   ///
-  /// The page-level [GestureDetector] handles all taps and drags –
+  /// When OCR text is visible the label is centred both horizontally and
+  /// vertically in white so it is legible against the blue background.
+  ///
+  /// The page-level [Listener] handles all taps and drags –
   /// the overlay itself carries no gesture recogniser.
   Widget _buildWordOverlay({
     required OcrTextElement element,
@@ -1444,24 +1549,22 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       child: Container(
         decoration: BoxDecoration(
           color: isSelected
-              ? Colors.blue.withOpacity(0.35)
-              : Colors.blue.withOpacity(0.15),
-          border: Border.all(
-            color: isSelected ? Colors.indigo : Colors.blue,
-            width: isSelected ? 2.5 : 1.0,
-          ),
+              ? Colors.blue.withOpacity(0.65)
+              : Colors.blue.withOpacity(0.35),
         ),
+        alignment: Alignment.center,
         child: showText && element.text.isNotEmpty
             ? Text(
                 element.text,
                 maxLines: 1,
                 overflow: TextOverflow.clip,
                 softWrap: false,
+                textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: Colors.black,
-                  // TextStyle.height: 1 removes ascender/descender padding so
-                  // the rendered cap height fills ~95 % of the container.
-                  fontSize: height * 0.95,
+                  color: Colors.white,
+                  // 80 % of the container height: leaves a small margin top and
+                  // bottom so glyphs with descenders (g, y, p…) are not clipped.
+                  fontSize: height * _kOcrTextHeightRatio,
                   height: 1,
                 ),
               )

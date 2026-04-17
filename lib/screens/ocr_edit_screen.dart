@@ -11,6 +11,9 @@ import '../services/storage_service.dart';
 /// Corner handles that appear on a selected bounding box to allow resizing.
 enum _ResizeHandle { topLeft, topRight, bottomLeft, bottomRight }
 
+/// Actions available in the unsaved-changes dialog.
+enum _UnsavedChangesAction { save, discard, cancel }
+
 /// Screen for editing the OCR text of a scanned document at the word level.
 ///
 /// Displays each page image inside an [InteractiveViewer] (for pinch-to-zoom
@@ -19,14 +22,14 @@ enum _ResizeHandle { topLeft, topRight, bottomLeft, bottomRight }
 /// box exactly. Tapping a word overlay opens a dialog to correct its text
 /// while keeping its bounding box unchanged.
 ///
-/// In **box-editing mode** (toggled via the AppBar) the [InteractiveViewer]
-/// pan/zoom is suspended and a dedicated [GestureDetector] takes over:
-///   • Tap on a box (unselected)   → select it.
-///   • Tap on a box (selected)     → edit its text.
+/// Box editing is always active:
+///   • Tap on a box (unselected)   → select it (FABs appear).
+///   • Tap on a box (selected)     → deselect.
 ///   • Tap on empty canvas         → deselect.
 ///   • Drag selected box           → move it.
 ///   • Drag corner handle          → resize the selected box.
-///   • FAB (+, green)              → add a new box at the page centre.
+///   • FAB (+, green)              → add a new box at the viewport centre.
+///   • FAB (edit, blue)            → edit the selected box's text.
 ///   • FAB (delete, red)           → delete the selected bounding box.
 ///
 /// When the user saves, the PDF is regenerated using
@@ -65,12 +68,26 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   bool _showOcrText = false;
 
   // ---------------------------------------------------------------------------
-  // Box-editing mode state
+  // Layout cache – updated by LayoutBuilder so _addBoxAtCenter can place new
+  // boxes at the viewport centre rather than the PDF centre.
   // ---------------------------------------------------------------------------
 
-  /// Whether box-editing mode is active. In this mode InteractiveViewer
-  /// pan/zoom is disabled and the dedicated edit gesture handler is active.
-  bool _isEditingBoxes = false;
+  double _currentScale = 1.0;
+  double _currentOffsetX = 0.0;
+  double _currentOffsetY = 0.0;
+  double _currentAvailableWidth = 300.0;
+  double _currentAvailableHeight = 500.0;
+
+  // ---------------------------------------------------------------------------
+  // Undo / redo history
+  // ---------------------------------------------------------------------------
+
+  final List<List<List<OcrTextBlock>>> _undoStack = [];
+  final List<List<List<OcrTextBlock>>> _redoStack = [];
+
+  // ---------------------------------------------------------------------------
+  // Box-editing state (always active)
+  // ---------------------------------------------------------------------------
 
   // Move sub-state: which element is currently being dragged.
   int? _dragPageIdx;
@@ -223,6 +240,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     if (!mounted) return;
 
     if (result != null && result != element.text) {
+      _pushUndo();
       setState(() {
         _hasChanges = true;
 
@@ -269,6 +287,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     int lineIdx,
     int elemIdx,
   ) {
+    _pushUndo();
     setState(() {
       _hasChanges = true;
 
@@ -345,8 +364,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     });
   }
 
-  /// Adds a new bounding box at the centre of the current page image and
-  /// prompts the user to enter text.
+  /// Adds a new bounding box at the centre of the current viewport and
+  /// prompts the user to enter text. Box dimensions are derived from the
+  /// measured text so that the overlay fits the word exactly.
   Future<void> _addBoxAtCenter() async {
     if (!mounted) return;
 
@@ -358,16 +378,37 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     if (text == null || text.isEmpty || !mounted) return;
 
     final pageIdx = _currentPage;
-    final imgSize = pageIdx < _imageSizes.length
-        ? (_imageSizes[pageIdx] ?? _fallbackImageSize)
-        : _fallbackImageSize;
 
-    // Default box: 30 % of image width, 5 % of image height, centred.
-    final boxWidth = imgSize.width * 0.30;
-    final boxHeight = imgSize.height * 0.05;
-    final left = (imgSize.width - boxWidth) / 2;
-    final top = (imgSize.height - boxHeight) / 2;
+    // Measure the text at a fixed screen font size (16 logical pixels) so
+    // the new box wraps the word tightly regardless of the current zoom level.
+    const screenFontSize = 16.0;
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(fontSize: screenFontSize),
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout(maxWidth: double.infinity);
 
+    // Convert screen pixels to image coordinate space.
+    // The rendering ratio 0.95 mirrors the TextStyle used in _buildWordOverlay
+    // (fontSize: height * 0.95), so dividing by it gives the required box height.
+    const textRenderRatio = 0.95;
+    const horizontalBoxPadding = 8.0; // extra pixels left + right inside the box
+    final scale = _currentScale > 0 ? _currentScale : 1.0;
+    final boxWidth = (textPainter.width + horizontalBoxPadding) / scale;
+    final boxHeight = textPainter.height / scale / textRenderRatio;
+
+    // Place box at the centre of the visible viewport (not the PDF centre).
+    final screenCX = _currentAvailableWidth / 2;
+    final screenCY = _currentAvailableHeight / 2;
+    final imgCX = (screenCX - _currentOffsetX) / scale;
+    final imgCY = (screenCY - _currentOffsetY) / scale;
+    final left = imgCX - boxWidth / 2;
+    final top = imgCY - boxHeight / 2;
+
+    _pushUndo();
     _addNewBox(pageIdx, left, top, boxWidth, boxHeight, text);
   }
 
@@ -375,9 +416,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // Box-editing gesture handlers
   // ---------------------------------------------------------------------------
 
-  /// Handles a tap in box-editing mode:
-  ///   • Tap on an unselected box  → select it (FAB appears).
-  ///   • Tap on the selected box   → edit its text.
+  /// Handles a tap:
+  ///   • Tap on an unselected box  → select it (context FABs appear).
+  ///   • Tap on the selected box   → deselect.
   ///   • Tap on empty canvas       → deselect.
   void _handleEditTap(
     Offset pos,
@@ -404,8 +445,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _selectedBlockIdx == bi &&
                 _selectedLineIdx == li &&
                 _selectedElemIdx == ei) {
-              // Already selected → edit text.
-              _editElement(pageIdx, bi, li, ei);
+              // Already selected → deselect (use the FAB to edit text).
+              setState(() {
+                _selectedPageIdx = null;
+                _selectedBlockIdx = null;
+                _selectedLineIdx = null;
+                _selectedElemIdx = null;
+              });
             } else {
               // Select it.
               setState(() {
@@ -455,6 +501,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       final selHeight = sel.height * scale;
       final handle = _hitTestResizeHandle(pos, selLeft, selTop, selWidth, selHeight);
       if (handle != null) {
+        _pushUndo();
         setState(() {
           _activeResizeHandle = handle;
           _dragLastPos = pos;
@@ -486,6 +533,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _selectedLineIdx == li &&
                 _selectedElemIdx == ei) {
               // Already selected → enter move mode.
+              _pushUndo();
               setState(() {
                 _dragPageIdx = pageIdx;
                 _dragBlockIdx = bi;
@@ -715,8 +763,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     }
   }
 
-  /// Clears all transient box-editing state (called on mode toggle and on
-  /// page change).
+  /// Clears all transient box-editing state (called on page change).
   void _clearEditState() {
     _dragPageIdx = null;
     _dragBlockIdx = null;
@@ -728,6 +775,111 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _selectedLineIdx = null;
     _selectedElemIdx = null;
     _activeResizeHandle = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Undo / redo
+  // ---------------------------------------------------------------------------
+
+  /// Creates a deep copy of [blocks] for snapshot storage.
+  static List<List<OcrTextBlock>> _deepCopyBlocks(
+      List<List<OcrTextBlock>> blocks) {
+    return blocks
+        .map(
+          (pageBlocks) => pageBlocks
+              .map(
+                (block) => OcrTextBlock(
+                  text: block.text,
+                  left: block.left,
+                  top: block.top,
+                  width: block.width,
+                  height: block.height,
+                  lines: block.lines
+                      .map(
+                        (line) => OcrTextLine(
+                          text: line.text,
+                          elements: line.elements
+                              .map(
+                                (el) => OcrTextElement(
+                                  text: el.text,
+                                  left: el.left,
+                                  top: el.top,
+                                  width: el.width,
+                                  height: el.height,
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      )
+                      .toList(),
+                ),
+              )
+              .toList(),
+        )
+        .toList();
+  }
+
+  /// Saves the current text-blocks state to the undo stack and clears redo.
+  void _pushUndo() {
+    _undoStack.add(_deepCopyBlocks(_textBlocks));
+    _redoStack.clear();
+  }
+
+  void _undo() {
+    if (_undoStack.isEmpty) return;
+    setState(() {
+      _redoStack.add(_deepCopyBlocks(_textBlocks));
+      _textBlocks = _undoStack.removeLast();
+      // When the undo stack is empty we have reverted all session changes and
+      // the current state equals the state at the time the screen was opened,
+      // so there are no unsaved changes.
+      _hasChanges = _undoStack.isNotEmpty;
+      _clearEditState();
+    });
+  }
+
+  void _redo() {
+    if (_redoStack.isEmpty) return;
+    setState(() {
+      _undoStack.add(_deepCopyBlocks(_textBlocks));
+      _textBlocks = _redoStack.removeLast();
+      _hasChanges = true;
+      _clearEditState();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Unsaved-changes dialog
+  // ---------------------------------------------------------------------------
+
+  Future<_UnsavedChangesAction?> _showUnsavedChangesDialog() {
+    return showDialog<_UnsavedChangesAction>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Ungespeicherte Änderungen'),
+        content: const Text(
+          'Es gibt ungespeicherte Änderungen. '
+          'Möchten Sie diese speichern oder verwerfen?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_UnsavedChangesAction.cancel),
+            child: const Text('Abbrechen'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_UnsavedChangesAction.discard),
+            child: const Text('Verwerfen'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_UnsavedChangesAction.save),
+            child: const Text('Speichern'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -796,118 +948,157 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Edit OCR Text'),
-        actions: [
-          IconButton(
-            icon: Icon(
-              Icons.text_fields,
-              color: _showOcrText ? Colors.blue : null,
-            ),
-            tooltip: _showOcrText ? 'Hide OCR text' : 'Show OCR text',
-            onPressed: () => setState(() => _showOcrText = !_showOcrText),
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.format_shapes,
-              color: _isEditingBoxes ? Colors.orange : null,
-            ),
-            tooltip:
-                _isEditingBoxes ? 'Stop editing boxes' : 'Edit boxes',
-            onPressed: () => setState(() {
-              _isEditingBoxes = !_isEditingBoxes;
-              _clearEditState();
-            }),
-          ),
-          if (_isSaving)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            )
-          else
+    final hasSelection = _selectedPageIdx != null &&
+        _selectedBlockIdx != null &&
+        _selectedLineIdx != null &&
+        _selectedElemIdx != null;
+
+    return PopScope(
+      // Only allow an unintercepted pop when there are no unsaved changes.
+      canPop: !_hasChanges,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return; // Pop succeeded normally (no changes).
+        final action = await _showUnsavedChangesDialog();
+        if (!mounted) return;
+        if (action == _UnsavedChangesAction.save) {
+          await _saveChanges();
+        } else if (action == _UnsavedChangesAction.discard) {
+          if (mounted) Navigator.of(context).pop();
+        }
+        // cancel / null: stay on screen.
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Edit OCR Text'),
+          actions: [
+            // Undo
             IconButton(
-              icon: const Icon(Icons.save),
-              tooltip: 'Save changes',
-              onPressed: _saveChanges,
+              icon: const Icon(Icons.undo),
+              tooltip: 'Rückgängig',
+              onPressed: _undoStack.isNotEmpty ? _undo : null,
             ),
-        ],
-      ),
-      body: _document.imagePaths.isEmpty
-          ? const Center(child: Text('No pages available.'))
-          : _buildPageViewer(),
-      floatingActionButton: _isEditingBoxes
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_selectedPageIdx != null &&
-                    _selectedBlockIdx != null &&
-                    _selectedLineIdx != null &&
-                    _selectedElemIdx != null) ...[
-                  FloatingActionButton(
-                    heroTag: 'fab_delete',
-                    onPressed: () {
-                      final pageIdx = _selectedPageIdx!;
-                      final blockIdx = _selectedBlockIdx!;
-                      final lineIdx = _selectedLineIdx!;
-                      final elemIdx = _selectedElemIdx!;
-                      setState(() {
-                        _selectedPageIdx = null;
-                        _selectedBlockIdx = null;
-                        _selectedLineIdx = null;
-                        _selectedElemIdx = null;
-                      });
-                      _deleteElement(pageIdx, blockIdx, lineIdx, elemIdx);
-                    },
-                    backgroundColor: Colors.red,
-                    tooltip: 'Delete selected box',
-                    child: const Icon(Icons.delete, color: Colors.white),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                FloatingActionButton(
-                  heroTag: 'fab_add',
-                  onPressed: _addBoxAtCenter,
-                  backgroundColor: Colors.green,
-                  tooltip: 'Add new bounding box',
-                  child: const Icon(Icons.add, color: Colors.white),
+            // Redo
+            IconButton(
+              icon: const Icon(Icons.redo),
+              tooltip: 'Wiederherstellen',
+              onPressed: _redoStack.isNotEmpty ? _redo : null,
+            ),
+            // Toggle OCR-text overlay
+            IconButton(
+              icon: Icon(
+                Icons.text_fields,
+                color: _showOcrText ? Colors.blue : null,
+              ),
+              tooltip: _showOcrText ? 'OCR-Text ausblenden' : 'OCR-Text anzeigen',
+              onPressed: () => setState(() => _showOcrText = !_showOcrText),
+            ),
+            // Save
+            if (_isSaving)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              ],
-            )
-          : null,
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.save),
+                tooltip: 'Änderungen speichern',
+                onPressed: _saveChanges,
+              ),
+          ],
+        ),
+        body: _document.imagePaths.isEmpty
+            ? const Center(child: Text('No pages available.'))
+            : _buildPageViewer(),
+        floatingActionButton: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Context-sensitive FABs shown only when a box is selected.
+            if (hasSelection) ...[
+              FloatingActionButton.small(
+                heroTag: 'fab_move',
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Ausgewählte Box ziehen zum Verschieben'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+                backgroundColor: Colors.blue.shade700,
+                tooltip: 'Verschieben (Box ziehen)',
+                child: const Icon(Icons.open_with, color: Colors.white),
+              ),
+              const SizedBox(height: 8),
+              FloatingActionButton.small(
+                heroTag: 'fab_scale',
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Eckpunkte ziehen zum Skalieren'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+                backgroundColor: Colors.blue.shade700,
+                tooltip: 'Skalieren (Eckpunkte ziehen)',
+                child: const Icon(Icons.crop_free, color: Colors.white),
+              ),
+              const SizedBox(height: 8),
+              FloatingActionButton.small(
+                heroTag: 'fab_edit_text',
+                onPressed: () => _editElement(
+                  _selectedPageIdx!,
+                  _selectedBlockIdx!,
+                  _selectedLineIdx!,
+                  _selectedElemIdx!,
+                ),
+                backgroundColor: Colors.blue.shade700,
+                tooltip: 'Text editieren',
+                child: const Icon(Icons.edit, color: Colors.white),
+              ),
+              const SizedBox(height: 8),
+              FloatingActionButton.small(
+                heroTag: 'fab_delete',
+                onPressed: () {
+                  final pageIdx = _selectedPageIdx!;
+                  final blockIdx = _selectedBlockIdx!;
+                  final lineIdx = _selectedLineIdx!;
+                  final elemIdx = _selectedElemIdx!;
+                  setState(() {
+                    _selectedPageIdx = null;
+                    _selectedBlockIdx = null;
+                    _selectedLineIdx = null;
+                    _selectedElemIdx = null;
+                  });
+                  _deleteElement(pageIdx, blockIdx, lineIdx, elemIdx);
+                },
+                backgroundColor: Colors.red,
+                tooltip: 'Löschen',
+                child: const Icon(Icons.delete, color: Colors.white),
+              ),
+              const SizedBox(height: 12),
+            ],
+            // Add FAB – always visible.
+            FloatingActionButton(
+              heroTag: 'fab_add',
+              onPressed: _addBoxAtCenter,
+              backgroundColor: Colors.green,
+              tooltip: 'Neue Bounding Box hinzufügen',
+              child: const Icon(Icons.add, color: Colors.white),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildPageViewer() {
     return Column(
       children: [
-        // Contextual hint bar shown only in box-editing mode.
-        if (_isEditingBoxes)
-          ColoredBox(
-            color: Colors.orange.shade50,
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              child: Row(
-                children: const [
-                  Icon(Icons.info_outline, size: 14, color: Colors.orange),
-                  SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      'Tap = select  •  Tap selected = edit text  •  '
-                      'Drag selected = move  •  Drag corner handle = resize  •  '
-                      'Tap (+) = add box',
-                      style: TextStyle(fontSize: 11, color: Colors.orange),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
         Expanded(
           child: PageView.builder(
             itemCount: _document.imagePaths.length,
@@ -922,7 +1113,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Text(
-              'Page ${_currentPage + 1} of ${_document.imagePaths.length}',
+              'Seite ${_currentPage + 1} von ${_document.imagePaths.length}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
@@ -938,11 +1129,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final imageSize =
         pageIndex < _imageSizes.length ? _imageSizes[pageIndex] : null;
 
+    // Box editing is always active: pan/zoom is suspended so gestures are
+    // fully handled by the dedicated GestureDetector below.
     return InteractiveViewer(
       minScale: 0.01,
       maxScale: double.infinity,
-      panEnabled: !_isEditingBoxes,
-      scaleEnabled: !_isEditingBoxes,
+      panEnabled: false,
+      scaleEnabled: false,
       child: LayoutBuilder(
         builder: (context, constraints) {
           if (imageSize == null) {
@@ -967,6 +1160,15 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
           final offsetX = (availableWidth - displayWidth) / 2;
           final offsetY = (availableHeight - displayHeight) / 2;
 
+          // Cache layout parameters for _addBoxAtCenter (viewport-centre placement).
+          if (pageIndex == _currentPage) {
+            _currentScale = scale;
+            _currentOffsetX = offsetX;
+            _currentOffsetY = offsetY;
+            _currentAvailableWidth = availableWidth;
+            _currentAvailableHeight = availableHeight;
+          }
+
           final content = _buildImageWithOverlays(
             imagePath: imagePath,
             pageBlocks: pageBlocks,
@@ -978,34 +1180,28 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             offsetY: offsetY,
           );
 
-          if (_isEditingBoxes) {
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTapUp: (d) => _handleEditTap(
-                d.localPosition,
-                pageIndex,
-                pageBlocks,
-                scale,
-                offsetX,
-                offsetY,
-              ),
-              onPanStart: (d) => _handleEditPanStart(
-                d.localPosition,
-                pageIndex,
-                pageBlocks,
-                scale,
-                offsetX,
-                offsetY,
-              ),
-              onPanUpdate: (d) =>
-                  _handleEditPanUpdate(d.localPosition, scale),
-              onPanEnd: (_) =>
-                  _handleEditPanEnd(),
-              child: content,
-            );
-          }
-
-          return content;
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (d) => _handleEditTap(
+              d.localPosition,
+              pageIndex,
+              pageBlocks,
+              scale,
+              offsetX,
+              offsetY,
+            ),
+            onPanStart: (d) => _handleEditPanStart(
+              d.localPosition,
+              pageIndex,
+              pageBlocks,
+              scale,
+              offsetX,
+              offsetY,
+            ),
+            onPanUpdate: (d) => _handleEditPanUpdate(d.localPosition, scale),
+            onPanEnd: (_) => _handleEditPanEnd(),
+            child: content,
+          );
         },
       ),
     );
@@ -1056,20 +1252,14 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   offsetX: offsetX,
                   offsetY: offsetY,
                   showText: _showOcrText,
-                  isEditMode: _isEditingBoxes,
-                  isSelected: _isEditingBoxes &&
-                      _selectedPageIdx == pageIndex &&
+                  isSelected: _selectedPageIdx == pageIndex &&
                       _selectedBlockIdx == bi &&
                       _selectedLineIdx == li &&
                       _selectedElemIdx == ei,
-                  onTap: _isEditingBoxes
-                      ? null
-                      : () => _editElement(pageIndex, bi, li, ei),
                 ),
 
           // Resize handles for the selected element.
-          if (_isEditingBoxes &&
-              _selectedPageIdx == pageIndex &&
+          if (_selectedPageIdx == pageIndex &&
               _selectedBlockIdx != null &&
               _selectedLineIdx != null &&
               _selectedElemIdx != null &&
@@ -1134,105 +1324,54 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   /// Builds a single word overlay box.
   ///
-  /// **View mode** (`isEditMode == false`): semi-transparent blue fill with
-  /// border; tapping opens the text-edit dialog.
+  /// Unselected boxes: semi-transparent blue fill with 1 px blue border.
+  /// Selected box: deeper blue fill + 2.5 px indigo border.
   ///
-  /// **Edit mode** (`isEditMode == true`): orange border. When [isSelected]
-  /// is true the box is highlighted with a deeper orange border and fill to
-  /// indicate that it is the active selection (the red delete FAB is shown
-  /// in this state). Tapping a box once selects it; tapping it again edits
-  /// its text. The page-level [GestureDetector] (set up in [_buildPage])
-  /// handles all taps and drags – the overlay itself carries no gesture
-  /// recogniser in edit mode.
+  /// The page-level [GestureDetector] handles all taps and drags –
+  /// the overlay itself carries no gesture recogniser.
   Widget _buildWordOverlay({
     required OcrTextElement element,
     required double scale,
     required double offsetX,
     required double offsetY,
     required bool showText,
-    required bool isEditMode,
     required bool isSelected,
-    required VoidCallback? onTap,
   }) {
     final left = element.left * scale + offsetX;
     final top = element.top * scale + offsetY;
     final width = element.width * scale;
     final height = element.height * scale;
 
-    if (isEditMode) {
-      return Positioned(
-        left: left,
-        top: top,
-        width: width,
-        height: height,
-        child: Container(
-          decoration: BoxDecoration(
-            color: isSelected
-                ? Colors.orange.withOpacity(0.35)
-                : Colors.orange.withOpacity(0.15),
-            border: Border.all(
-              color: isSelected ? Colors.deepOrange : Colors.orange,
-              width: isSelected ? 2.5 : 1.5,
-            ),
-          ),
-          child: showText && element.text.isNotEmpty
-              ? Text(
-                  element.text,
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  softWrap: false,
-                  style: TextStyle(
-                    color: Colors.black,
-                    // height is in logical pixels (same unit as fontSize).
-                    // TextStyle.height: 1 removes ascender/descender padding so
-                    // the rendered cap height fills ~95 % of the container.
-                    fontSize: height * 0.95,
-                    height: 1,
-                  ),
-                )
-              : null,
-        ),
-      );
-    }
-
-    // View mode.
-    final decoration = showText
-        ? const BoxDecoration()
-        : BoxDecoration(
-            color: Colors.blue.withOpacity(0.15),
-            border: Border.all(
-              color: Colors.blue.withOpacity(0.45),
-            ),
-          );
-
     return Positioned(
       left: left,
       top: top,
       width: width,
       height: height,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          decoration: decoration,
-          // In view mode with OCR text visible, render the text at exactly
-          // 95 % of the bounding-box height so every word is legible
-          // regardless of how narrow the box is.
-          // height and fontSize are both in logical pixels; TextStyle.height: 1
-          // removes ascender/descender padding so the cap height fills the box.
-          child: showText && element.text.isNotEmpty
-              ? Text(
-                  element.text,
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  softWrap: false,
-                  style: TextStyle(
-                    color: Colors.black,
-                    fontSize: height * 0.95,
-                    height: 1,
-                  ),
-                )
-              : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.blue.withOpacity(0.35)
+              : Colors.blue.withOpacity(0.15),
+          border: Border.all(
+            color: isSelected ? Colors.indigo : Colors.blue,
+            width: isSelected ? 2.5 : 1.0,
+          ),
         ),
+        child: showText && element.text.isNotEmpty
+            ? Text(
+                element.text,
+                maxLines: 1,
+                overflow: TextOverflow.clip,
+                softWrap: false,
+                style: TextStyle(
+                  color: Colors.black,
+                  // TextStyle.height: 1 removes ascender/descender padding so
+                  // the rendered cap height fills ~95 % of the container.
+                  fontSize: height * 0.95,
+                  height: 1,
+                ),
+              )
+            : null,
       ),
     );
   }

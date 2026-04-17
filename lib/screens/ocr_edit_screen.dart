@@ -78,6 +78,12 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   double _currentAvailableWidth = 300.0;
   double _currentAvailableHeight = 500.0;
 
+  // TransformationController tracks the InteractiveViewer's current zoom/pan
+  // transform so that _addBoxAtCenter can place new boxes at the visible
+  // centre even when the user has zoomed in.
+  final TransformationController _transformationController =
+      TransformationController();
+
   // ---------------------------------------------------------------------------
   // Undo / redo history
   // ---------------------------------------------------------------------------
@@ -151,6 +157,12 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
     _imageSizes = List.filled(_document.imagePaths.length, null);
     _loadImageSizes();
+  }
+
+  @override
+  void dispose() {
+    _transformationController.dispose();
+    super.dispose();
   }
 
   /// Reads the natural (pixel) dimensions of every page image.
@@ -401,10 +413,13 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final boxHeight = textPainter.height / scale / textRenderRatio;
 
     // Place box at the centre of the visible viewport (not the PDF centre).
-    final screenCX = _currentAvailableWidth / 2;
-    final screenCY = _currentAvailableHeight / 2;
-    final imgCX = (screenCX - _currentOffsetX) / scale;
-    final imgCY = (screenCY - _currentOffsetY) / scale;
+    // Use the TransformationController to convert the viewport centre to scene
+    // coordinates, so the placement is correct even when zoomed in.
+    final viewportCenter =
+        Offset(_currentAvailableWidth / 2, _currentAvailableHeight / 2);
+    final sceneCenter = _transformationController.toScene(viewportCenter);
+    final imgCX = (sceneCenter.dx - _currentOffsetX) / scale;
+    final imgCY = (sceneCenter.dy - _currentOffsetY) / scale;
     final left = imgCX - boxWidth / 2;
     final top = imgCY - boxHeight / 2;
 
@@ -1105,6 +1120,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             onPageChanged: (index) => setState(() {
               _currentPage = index;
               _clearEditState();
+              // Reset zoom/pan when the user swipes to a new page.
+              _transformationController.value = Matrix4.identity();
             }),
             itemBuilder: (_, pageIndex) => _buildPage(pageIndex),
           ),
@@ -1129,13 +1146,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final imageSize =
         pageIndex < _imageSizes.length ? _imageSizes[pageIndex] : null;
 
-    // Box editing is always active: pan/zoom is suspended so gestures are
-    // fully handled by the dedicated GestureDetector below.
+    // Pinch-to-zoom is enabled via the InteractiveViewer (scaleEnabled: true).
+    // Single-finger gestures (tap, pan) are intercepted by the GestureDetector
+    // below and used for box selection/editing, so panEnabled remains false to
+    // avoid conflicting with box-drag gestures.
     return InteractiveViewer(
-      minScale: 0.01,
-      maxScale: double.infinity,
+      transformationController: _transformationController,
+      minScale: 0.5,
+      maxScale: 8.0,
       panEnabled: false,
-      scaleEnabled: false,
+      scaleEnabled: true,
       child: LayoutBuilder(
         builder: (context, constraints) {
           if (imageSize == null) {

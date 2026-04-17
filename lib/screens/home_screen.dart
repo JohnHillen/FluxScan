@@ -37,6 +37,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = true;
   bool _isScanning = false;
 
+  /// Notifier used to stream progress (0.0–1.0) into the processing dialog.
+  final ValueNotifier<double> _progressNotifier = ValueNotifier(0.0);
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _scannerService.dispose();
+    _progressNotifier.dispose();
     super.dispose();
   }
 
@@ -72,6 +76,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() => _isScanning = true);
 
+    var progressDialogShown = false;
+
     try {
       // Step 1: Open native document scanner
       final imagePaths = await _scannerService.scanDocument();
@@ -82,11 +88,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (!mounted) return;
 
-      // Show processing indicator
-      _showSnackBar('Processing scan...');
+      // Step 2: Enhance images and run OCR – show progress dialog.
+      _progressNotifier.value = 0.0;
+      _showProcessingDialog('Verarbeitung…');
+      progressDialogShown = true;
 
-      // Step 2: Enhance images and run OCR
-      final processed = await _scannerService.processImages(imagePaths);
+      final processed = await _scannerService.processImages(
+        imagePaths,
+        onProgress: (current, total) {
+          _progressNotifier.value = current / total;
+        },
+      );
+
+      // Close the progress dialog.
+      if (mounted) Navigator.of(context).pop();
+      progressDialogShown = false;
 
       // Step 3: Generate searchable PDF (use original images for the visual layer)
       final firstPageBlocks =
@@ -129,11 +145,13 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } on ScannerException catch (e) {
       if (mounted) {
+        if (progressDialogShown) Navigator.of(context).pop();
         setState(() => _isScanning = false);
         _showError(e.message);
       }
     } catch (e) {
       if (mounted) {
+        if (progressDialogShown) Navigator.of(context).pop();
         setState(() => _isScanning = false);
         _showError('An unexpected error occurred: $e');
       }
@@ -147,6 +165,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Track temp image paths so they can always be cleaned up.
     var tempImagePaths = <String>[];
+    var progressDialogShown = false;
 
     try {
       // Step 1: Let the user pick a PDF file.
@@ -157,14 +176,25 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       if (!mounted) return;
-      _showSnackBar('Processing imported PDF…');
 
       // Step 2: Rasterise each PDF page to a temporary PNG image.
       // The result also carries the original page dimensions in PDF points.
-      final importResult = await _pdfImportService.renderPagesToImages(pdfPath);
+      // Progress: 0–50 % for rendering, 50–100 % for OCR processing.
+      _progressNotifier.value = 0.0;
+      _showProcessingDialog('PDF wird importiert…');
+      progressDialogShown = true;
+
+      final importResult = await _pdfImportService.renderPagesToImages(
+        pdfPath,
+        onProgress: (current, total) {
+          _progressNotifier.value = (current / total) * 0.5;
+        },
+      );
       tempImagePaths = importResult.imagePaths;
       if (tempImagePaths.isEmpty) {
         if (mounted) {
+          Navigator.of(context).pop(); // close progress dialog
+          progressDialogShown = false;
           setState(() => _isScanning = false);
           _showError('Could not extract pages from the selected PDF.');
         }
@@ -172,7 +202,16 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       // Step 3: Enhance images and run OCR through the existing pipeline.
-      final processed = await _scannerService.processImages(tempImagePaths);
+      final processed = await _scannerService.processImages(
+        tempImagePaths,
+        onProgress: (current, total) {
+          _progressNotifier.value = 0.5 + (current / total) * 0.5;
+        },
+      );
+
+      // Close the progress dialog.
+      if (mounted) Navigator.of(context).pop();
+      progressDialogShown = false;
 
       // Step 4: Copy the rendered page images to persistent storage so the
       // document thumbnail and preview continue to work after temp cleanup.
@@ -243,6 +282,7 @@ class _HomeScreenState extends State<HomeScreen> {
         } catch (_) {}
       }
       if (mounted) {
+        if (progressDialogShown) Navigator.of(context).pop();
         setState(() => _isScanning = false);
         _showError('Failed to import PDF: $e');
       }
@@ -300,6 +340,41 @@ class _HomeScreenState extends State<HomeScreen> {
     await Share.shareXFiles(
       [XFile(tempFile.path)],
       subject: document.title,
+    );
+  }
+
+  /// Shows a non-dismissible progress dialog that displays a percentage.
+  ///
+  /// The dialog listens to [_progressNotifier] and updates automatically.
+  /// Call [Navigator.of(context).pop()] to close it when processing finishes.
+  void _showProcessingDialog(String title) {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Text(title),
+          content: ValueListenableBuilder<double>(
+            valueListenable: _progressNotifier,
+            builder: (_, progress, __) {
+              final percent = (progress * 100).round();
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(value: progress),
+                  const SizedBox(height: 12),
+                  Text(
+                    '$percent %',
+                    style: Theme.of(dialogContext).textTheme.titleMedium,
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 

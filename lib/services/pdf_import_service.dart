@@ -60,11 +60,17 @@ class PdfImportService {
   /// converted to PNG using the `image` package and written to the system
   /// temporary directory.
   ///
+  /// [onProgress] is called after each page is rendered with the number of
+  /// pages done and the total page count.
+  ///
   /// Returns a [PdfImportResult] with the temporary PNG file paths and the
   /// original page dimensions (in PDF points) in page order.
   /// The caller is responsible for deleting the image files when they are no
   /// longer needed (see [HomeScreen._importPdf]).
-  Future<PdfImportResult> renderPagesToImages(String pdfPath) async {
+  Future<PdfImportResult> renderPagesToImages(
+    String pdfPath, {
+    void Function(int current, int total)? onProgress,
+  }) async {
     final document = await PdfDocument.openFile(pdfPath);
     final tempDir = await getTemporaryDirectory();
     final imagePaths = <String>[];
@@ -107,6 +113,8 @@ class PdfImportService {
         } finally {
           pdfImage.dispose();
         }
+
+        onProgress?.call(i + 1, document.pages.length);
       }
     } finally {
       await document.dispose();

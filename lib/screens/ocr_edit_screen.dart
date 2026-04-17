@@ -415,14 +415,25 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   Future<void> _addBoxAtCenter() async {
     if (!mounted) return;
 
+    // Capture the current viewport state BEFORE opening the dialog.
+    // Keyboard show/hide during the dialog (triggered by the text field) can
+    // change layout metrics and the InteractiveViewer transformation while the
+    // dialog is open, which would otherwise mis-place the new box.
+    final capturedPage = _currentPage;
+    final capturedScale = _currentScale > 0 ? _currentScale : 1.0;
+    final capturedOffsetX = _currentOffsetX;
+    final capturedOffsetY = _currentOffsetY;
+    final capturedViewportCenter =
+        Offset(_currentAvailableWidth / 2, _currentAvailableHeight / 2);
+    final capturedSceneCenter =
+        _transformationController.toScene(capturedViewportCenter);
+
     final text = await showDialog<String>(
       context: context,
       builder: (_) => const _EditWordDialog(initialText: ''),
     );
 
     if (text == null || text.isEmpty || !mounted) return;
-
-    final pageIdx = _currentPage;
 
     // Measure the text at a fixed screen font size (16 logical pixels) so
     // the new box wraps the word tightly regardless of the current zoom level.
@@ -441,23 +452,22 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     // (fontSize: height * 0.95), so dividing by it gives the required box height.
     const textRenderRatio = 0.95;
     const horizontalBoxPadding = 8.0; // extra pixels left + right inside the box
-    final scale = _currentScale > 0 ? _currentScale : 1.0;
-    final boxWidth = (textPainter.width + horizontalBoxPadding) / scale;
-    final boxHeight = textPainter.height / scale / textRenderRatio;
+    final boxWidth =
+        (textPainter.width + horizontalBoxPadding) / capturedScale;
+    final boxHeight = textPainter.height / capturedScale / textRenderRatio;
 
     // Place box at the centre of the visible viewport (not the PDF centre).
-    // Use the TransformationController to convert the viewport centre to scene
-    // coordinates, so the placement is correct even when zoomed in.
-    final viewportCenter =
-        Offset(_currentAvailableWidth / 2, _currentAvailableHeight / 2);
-    final sceneCenter = _transformationController.toScene(viewportCenter);
-    final imgCX = (sceneCenter.dx - _currentOffsetX) / scale;
-    final imgCY = (sceneCenter.dy - _currentOffsetY) / scale;
+    // Use the captured scene centre so that keyboard / layout changes during
+    // the dialog do not affect the placement.
+    final imgCX =
+        (capturedSceneCenter.dx - capturedOffsetX) / capturedScale;
+    final imgCY =
+        (capturedSceneCenter.dy - capturedOffsetY) / capturedScale;
     final left = imgCX - boxWidth / 2;
     final top = imgCY - boxHeight / 2;
 
     _pushUndo();
-    _addNewBox(pageIdx, left, top, boxWidth, boxHeight, text);
+    _addNewBox(capturedPage, left, top, boxWidth, boxHeight, text);
   }
 
   // ---------------------------------------------------------------------------
@@ -482,11 +492,15 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             ei < blocks[bi].lines[li].elements.length;
             ei++) {
           final el = blocks[bi].lines[li].elements[ei];
-          final boxRect = Rect.fromLTWH(
-            el.left * scale + offsetX,
-            el.top * scale + offsetY,
-            el.width * scale,
-            el.height * scale,
+          final elDisplayW = el.width * scale;
+          final elDisplayH = el.height * scale;
+          final boxRect = Rect.fromCenter(
+            center: Offset(
+              el.left * scale + offsetX + elDisplayW / 2,
+              el.top * scale + offsetY + elDisplayH / 2,
+            ),
+            width: math.max(elDisplayW, _kMinBoxHitSize),
+            height: math.max(elDisplayH, _kMinBoxHitSize),
           );
           if (boxRect.contains(pos)) {
             if (_selectedPageIdx == pageIdx &&
@@ -514,13 +528,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         }
       }
     }
-    // Tapped on empty canvas → deselect.
-    setState(() {
-      _selectedPageIdx = null;
-      _selectedBlockIdx = null;
-      _selectedLineIdx = null;
-      _selectedElemIdx = null;
-    });
+    // Tapped on empty canvas → deselect only when no FAB mode is active.
+    // When a FAB mode is active, only the FAB button itself can deactivate it.
+    if (_activeFabMode == null) {
+      setState(() {
+        _selectedPageIdx = null;
+        _selectedBlockIdx = null;
+        _selectedLineIdx = null;
+        _selectedElemIdx = null;
+      });
+    }
   }
 
   /// Handles pan-start in box-editing mode: determines whether to enter
@@ -623,11 +640,15 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             ei < blocks[bi].lines[li].elements.length;
             ei++) {
           final el = blocks[bi].lines[li].elements[ei];
-          final boxRect = Rect.fromLTWH(
-            el.left * scale + offsetX,
-            el.top * scale + offsetY,
-            el.width * scale,
-            el.height * scale,
+          final elDisplayW = el.width * scale;
+          final elDisplayH = el.height * scale;
+          final boxRect = Rect.fromCenter(
+            center: Offset(
+              el.left * scale + offsetX + elDisplayW / 2,
+              el.top * scale + offsetY + elDisplayH / 2,
+            ),
+            width: math.max(elDisplayW, _kMinBoxHitSize),
+            height: math.max(elDisplayH, _kMinBoxHitSize),
           );
           if (boxRect.contains(pos)) {
             if (_selectedPageIdx == pageIdx &&
@@ -658,7 +679,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       }
     }
 
-    // 3. Empty canvas → deselect and start image pan.
+    // 3. Empty canvas – when a FAB mode is active do nothing (selection and
+    //    mode should only be cleared via the FAB buttons themselves).
+    if (_activeFabMode != null) return;
+
+    // No FAB mode: deselect and start image pan.
     _isImagePanning = true;
     setState(() {
       _selectedPageIdx = null;
@@ -682,6 +707,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   /// when the scale FAB mode is active.
   static const double _kHandleHitSize = 24.0;
   static const double _kHandleHitSizeScaleMode = 48.0;
+
+  /// Minimum hit size (scene pixels) used when hit-testing a bounding box so
+  /// that very small boxes can still be tapped and dragged reliably.
+  static const double _kMinBoxHitSize = 28.0;
 
   /// Fraction of the overlay height used as the OCR text font size.
   /// 80 % leaves a small top/bottom margin so descenders are not clipped.
@@ -1454,8 +1483,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                       _selectedElemIdx == ei,
                 ),
 
-          // Resize handles for the selected element.
-          if (_selectedPageIdx == pageIndex &&
+          // Resize handles for the selected element – only in scale FAB mode.
+          if (_activeFabMode == _FabMode.scale &&
+              _selectedPageIdx == pageIndex &&
               _selectedBlockIdx != null &&
               _selectedLineIdx != null &&
               _selectedElemIdx != null &&

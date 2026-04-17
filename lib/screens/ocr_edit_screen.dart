@@ -119,6 +119,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   /// reverted.
   List<List<OcrTextBlock>>? _editModeSnapshot;
 
+  /// When true, the undo entry pushed by [_addBoxAtCenter] should be removed
+  /// if the user presses Cancel (so the new box is cleanly discarded and the
+  /// undo stack is not left in an inconsistent state).
+  bool _editModePopUndoOnCancel = false;
+
   /// True while a single-finger drag is panning the image (not editing a box).
   bool _isImagePanning = false;
 
@@ -501,10 +506,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       _selectedBlockIdx = newBlockIdx;
       _selectedLineIdx = 0;
       _selectedElemIdx = 0;
-      // Save snapshot BEFORE edit mode begins so Cancel removes the new box.
-      _editModeSnapshot = _deepCopyBlocks(
-        _undoStack.last, // top of undo stack = state before the new box
-      );
+      // Save snapshot = state BEFORE the new box so that Cancel removes it.
+      // _undoStack.last is safe here because _pushUndo() was just called.
+      assert(_undoStack.isNotEmpty, '_pushUndo() must have been called above');
+      _editModeSnapshot = _deepCopyBlocks(_undoStack.last);
+      _editModePopUndoOnCancel = true;
       _boxEditMode = true;
     });
   }
@@ -520,6 +526,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   void _enterBoxEditMode() {
     setState(() {
       _editModeSnapshot = _deepCopyBlocks(_textBlocks);
+      _editModePopUndoOnCancel = false;
       _boxEditMode = true;
     });
   }
@@ -529,6 +536,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     setState(() {
       _boxEditMode = false;
       _editModeSnapshot = null;
+      _editModePopUndoOnCancel = false;
       _activeFabMode = null;
     });
   }
@@ -540,8 +548,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       if (_editModeSnapshot != null) {
         _textBlocks = _editModeSnapshot!;
         _editModeSnapshot = null;
+        // If the user cancels immediately after adding a new box, also remove
+        // the undo entry that was pushed for that new box – the document is
+        // back to the pre-add state so keeping the entry would make the undo
+        // stack inconsistent and _hasChanges wrong.
+        if (_editModePopUndoOnCancel && _undoStack.isNotEmpty) {
+          _undoStack.removeLast();
+        }
         _hasChanges = _undoStack.isNotEmpty;
       }
+      _editModePopUndoOnCancel = false;
       _boxEditMode = false;
       _activeFabMode = null;
       _selectedPageIdx = null;
@@ -1055,6 +1071,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _activeFabMode = null;
     _boxEditMode = false;
     _editModeSnapshot = null;
+    _editModePopUndoOnCancel = false;
     _isImagePanning = false;
     _activePointerPositions.clear();
     _panGestureDownPosition = null;
@@ -1388,6 +1405,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   setState(() {
                     _boxEditMode = false;
                     _editModeSnapshot = null;
+                    _editModePopUndoOnCancel = false;
                     _activeFabMode = null;
                     _selectedPageIdx = null;
                     _selectedBlockIdx = null;

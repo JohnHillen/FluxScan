@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -59,10 +60,6 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   static const _pageBreakDelimiter = '\n\n--- Page Break ---\n\n';
 
-  /// A4 at 300 DPI — used as the fallback when image dimensions cannot be
-  /// determined from the file header.
-  static const _fallbackImageSize = _ImageSize(2480, 3508);
-
   late ScanDocument _document;
 
   /// Mutable, per-page list of text blocks.
@@ -110,6 +107,17 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   /// Currently active FAB mode (move / scale) or null for default behaviour.
   _FabMode? _activeFabMode;
+
+  /// True when the bounding-box edit mode is active for the selected element.
+  ///
+  /// Only the OK and Cancel FABs can exit this mode.
+  bool _boxEditMode = false;
+
+  /// Snapshot of [_textBlocks] taken when box-edit mode is entered.
+  ///
+  /// Restored when the user presses Cancel so that all in-session changes are
+  /// reverted.
+  List<List<OcrTextBlock>>? _editModeSnapshot;
 
   /// True while a single-finger drag is panning the image (not editing a box).
   bool _isImagePanning = false;
@@ -227,65 +235,28 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   }
 
   /// Reads the natural (pixel) dimensions of every page image.
+  ///
+  /// Uses [ui.instantiateImageCodec] so that EXIF rotation is respected on
+  /// all platforms – the returned size matches exactly what [Image.file]
+  /// displays, preventing coordinate mismatches between the overlays and the
+  /// rendered image (vertical offset issue).
   Future<void> _loadImageSizes() async {
     for (var i = 0; i < _document.imagePaths.length; i++) {
       try {
         final bytes = await File(_document.imagePaths[i]).readAsBytes();
-        final size = _decodeSizeFromBytes(bytes);
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        final w = frame.image.width.toDouble();
+        final h = frame.image.height.toDouble();
+        frame.image.dispose();
+        codec.dispose();
         if (mounted) {
-          setState(() => _imageSizes[i] = size);
+          setState(() => _imageSizes[i] = _ImageSize(w, h));
         }
       } catch (_) {
         // Leave null; overlays will simply be omitted for this page.
       }
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Dimension helpers (mirror logic from PdfService._decodeDimensions)
-  // ---------------------------------------------------------------------------
-
-  static _ImageSize _decodeSizeFromBytes(List<int> bytes) {
-    // PNG
-    if (bytes.length > 24 && bytes[0] == 0x89 && bytes[1] == 0x50) {
-      final w = (bytes[16] << 24) |
-          (bytes[17] << 16) |
-          (bytes[18] << 8) |
-          bytes[19];
-      final h = (bytes[20] << 24) |
-          (bytes[21] << 16) |
-          (bytes[22] << 8) |
-          bytes[23];
-      return _ImageSize(w.toDouble(), h.toDouble());
-    }
-    // JPEG
-    if (bytes.length > 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) {
-      return _readJpegSize(bytes);
-    }
-    // Fallback (A4 @ 300 dpi)
-    return _fallbackImageSize;
-  }
-
-  static _ImageSize _readJpegSize(List<int> bytes) {
-    var offset = 2;
-    while (offset < bytes.length - 1) {
-      if (bytes[offset] != 0xFF) break;
-      final marker = bytes[offset + 1];
-      if (marker >= 0xC0 && marker <= 0xC2) {
-        if (offset + 9 < bytes.length) {
-          final h = (bytes[offset + 5] << 8) | bytes[offset + 6];
-          final w = (bytes[offset + 7] << 8) | bytes[offset + 8];
-          return _ImageSize(w.toDouble(), h.toDouble());
-        }
-      }
-      if (offset + 3 < bytes.length) {
-        final length = (bytes[offset + 2] << 8) | bytes[offset + 3];
-        offset += 2 + length;
-      } else {
-        break;
-      }
-    }
-    return _fallbackImageSize;
   }
 
   // ---------------------------------------------------------------------------
@@ -495,7 +466,89 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final top = imgCY - boxHeight / 2;
 
     _pushUndo();
-    _addNewBox(capturedPage, left, top, boxWidth, boxHeight, text);
+    // Index the new block will occupy after insertion (computed before any
+    // mutation so we can select it in the same setState).
+    final newBlockIdx = capturedPage < _textBlocks.length
+        ? _textBlocks[capturedPage].length
+        : 0;
+
+    // Add the block (mirrors _addNewBox logic) and immediately enter edit
+    // mode for it.
+    final newElement = OcrTextElement(
+      text: text,
+      left: left,
+      top: top,
+      width: boxWidth,
+      height: boxHeight,
+    );
+    final newLine = OcrTextLine(text: text, elements: [newElement]);
+    final newBlock = OcrTextBlock(
+      text: text,
+      left: left,
+      top: top,
+      width: boxWidth,
+      height: boxHeight,
+      lines: [newLine],
+    );
+    setState(() {
+      _hasChanges = true;
+      while (_textBlocks.length <= capturedPage) {
+        _textBlocks.add([]);
+      }
+      _textBlocks[capturedPage] = [..._textBlocks[capturedPage], newBlock];
+      // Select the new box.
+      _selectedPageIdx = capturedPage;
+      _selectedBlockIdx = newBlockIdx;
+      _selectedLineIdx = 0;
+      _selectedElemIdx = 0;
+      // Save snapshot BEFORE edit mode begins so Cancel removes the new box.
+      _editModeSnapshot = _deepCopyBlocks(
+        _undoStack.last, // top of undo stack = state before the new box
+      );
+      _boxEditMode = true;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Box edit mode
+  // ---------------------------------------------------------------------------
+
+  /// Activates bounding-box edit mode for the currently selected element.
+  ///
+  /// A snapshot of [_textBlocks] is saved so [_exitBoxEditModeCancel] can
+  /// revert any changes made during the session.
+  void _enterBoxEditMode() {
+    setState(() {
+      _editModeSnapshot = _deepCopyBlocks(_textBlocks);
+      _boxEditMode = true;
+    });
+  }
+
+  /// Exits bounding-box edit mode, keeping all changes.
+  void _exitBoxEditModeOk() {
+    setState(() {
+      _boxEditMode = false;
+      _editModeSnapshot = null;
+      _activeFabMode = null;
+    });
+  }
+
+  /// Exits bounding-box edit mode and reverts all changes made since edit
+  /// mode was entered (restores the snapshot).
+  void _exitBoxEditModeCancel() {
+    setState(() {
+      if (_editModeSnapshot != null) {
+        _textBlocks = _editModeSnapshot!;
+        _editModeSnapshot = null;
+        _hasChanges = _undoStack.isNotEmpty;
+      }
+      _boxEditMode = false;
+      _activeFabMode = null;
+      _selectedPageIdx = null;
+      _selectedBlockIdx = null;
+      _selectedLineIdx = null;
+      _selectedElemIdx = null;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -504,8 +557,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   /// Handles a tap:
   ///   • Tap on an unselected box  → select it (context FABs appear).
-  ///   • Tap on the selected box   → deselect.
-  ///   • Tap on empty canvas       → deselect.
+  ///   • Tap on the selected box   → deselect (unless box-edit mode is active).
+  ///   • Tap on empty canvas       → deselect (unless box-edit mode is active).
   void _handleEditTap(
     Offset pos,
     int pageIdx,
@@ -519,6 +572,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       _debugLongPressImageCoords = null;
       _debugLongPressDisplayPos = null;
     }
+
+    // When box-edit mode is active, all interactions are locked: only the
+    // OK / Cancel FABs can change the selection or exit the mode.
+    if (_boxEditMode) return;
+
     for (var bi = 0; bi < blocks.length; bi++) {
       for (var li = 0; li < blocks[bi].lines.length; li++) {
         for (var ei = 0;
@@ -698,8 +756,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _dragElemIdx = ei;
                 _dragLastPos = pos;
               });
-            } else {
-              // Not yet selected → select it (no move).
+            } else if (!_boxEditMode) {
+              // Not yet selected, and not locked in edit mode → select it.
               setState(() {
                 _selectedPageIdx = pageIdx;
                 _selectedBlockIdx = bi;
@@ -707,17 +765,19 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _selectedElemIdx = ei;
               });
             }
+            // When _boxEditMode is true and this is a different box, ignore.
             return;
           }
         }
       }
     }
 
-    // 3. Empty canvas – when a FAB mode is active do nothing (selection and
-    //    mode should only be cleared via the FAB buttons themselves).
-    if (_activeFabMode != null) return;
+    // 3. Empty canvas – when a FAB mode is active, or when box-edit mode is
+    //    active, do nothing (selection and mode should only be cleared via the
+    //    FAB buttons themselves).
+    if (_activeFabMode != null || _boxEditMode) return;
 
-    // No FAB mode: deselect and start image pan.
+    // No FAB mode, no box-edit mode: deselect and start image pan.
     _isImagePanning = true;
     setState(() {
       _selectedPageIdx = null;
@@ -993,6 +1053,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _activeResizeHandle = null;
     _pressedResizeHandle = null;
     _activeFabMode = null;
+    _boxEditMode = false;
+    _editModeSnapshot = null;
     _isImagePanning = false;
     _activePointerPositions.clear();
     _panGestureDownPosition = null;
@@ -1245,8 +1307,25 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         floatingActionButton: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Context-sensitive FABs shown only when a box is selected.
-            if (hasSelection) ...[
+            // ----------------------------------------------------------------
+            // Box selected, NOT in edit mode → single "enter edit mode" FAB.
+            // ----------------------------------------------------------------
+            if (hasSelection && !_boxEditMode) ...[
+              FloatingActionButton.small(
+                heroTag: 'fab_enter_edit_mode',
+                onPressed: _enterBoxEditMode,
+                backgroundColor: Colors.orange,
+                tooltip: 'Bearbeitungsmodus aktivieren',
+                child: const Icon(Icons.edit_outlined, color: Colors.white),
+              ),
+              const SizedBox(height: 12),
+            ],
+
+            // ----------------------------------------------------------------
+            // Box edit mode active → action FABs + OK / Cancel.
+            // ----------------------------------------------------------------
+            if (hasSelection && _boxEditMode) ...[
+              // Move
               FloatingActionButton.small(
                 heroTag: 'fab_move',
                 onPressed: () {
@@ -1264,6 +1343,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 child: const Icon(Icons.open_with, color: Colors.white),
               ),
               const SizedBox(height: 8),
+              // Scale
               FloatingActionButton.small(
                 heroTag: 'fab_scale',
                 onPressed: () {
@@ -1282,6 +1362,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 child: const Icon(Icons.crop_free, color: Colors.white),
               ),
               const SizedBox(height: 8),
+              // Edit text
               FloatingActionButton.small(
                 heroTag: 'fab_edit_text',
                 onPressed: () => _editElement(
@@ -1295,6 +1376,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 child: const Icon(Icons.edit, color: Colors.white),
               ),
               const SizedBox(height: 8),
+              // Delete
               FloatingActionButton.small(
                 heroTag: 'fab_delete',
                 onPressed: () {
@@ -1302,7 +1384,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   final blockIdx = _selectedBlockIdx!;
                   final lineIdx = _selectedLineIdx!;
                   final elemIdx = _selectedElemIdx!;
+                  // Exit edit mode and deselect before deleting.
                   setState(() {
+                    _boxEditMode = false;
+                    _editModeSnapshot = null;
+                    _activeFabMode = null;
                     _selectedPageIdx = null;
                     _selectedBlockIdx = null;
                     _selectedLineIdx = null;
@@ -1314,8 +1400,27 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 tooltip: 'Löschen',
                 child: const Icon(Icons.delete, color: Colors.white),
               ),
+              const SizedBox(height: 8),
+              // Cancel
+              FloatingActionButton.small(
+                heroTag: 'fab_cancel',
+                onPressed: _exitBoxEditModeCancel,
+                backgroundColor: Colors.red.shade700,
+                tooltip: 'Bearbeitung abbrechen',
+                child: const Icon(Icons.close, color: Colors.white),
+              ),
+              const SizedBox(height: 8),
+              // OK
+              FloatingActionButton.small(
+                heroTag: 'fab_ok',
+                onPressed: _exitBoxEditModeOk,
+                backgroundColor: Colors.green,
+                tooltip: 'Änderungen übernehmen',
+                child: const Icon(Icons.check, color: Colors.white),
+              ),
               const SizedBox(height: 12),
             ],
+
             // Add FAB – always visible.
             FloatingActionButton(
               heroTag: 'fab_add',

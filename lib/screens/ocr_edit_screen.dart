@@ -1674,7 +1674,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     return Positioned.fill(
       child: Stack(
         children: [
-        // Cross-hair marker at the tap point.
+        // Crosshair marker at the tap point.
         Positioned(
           left: displayPos.dx - markerR,
           top: displayPos.dy - markerR,

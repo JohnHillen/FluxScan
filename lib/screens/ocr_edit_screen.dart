@@ -195,13 +195,20 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // Init / lifecycle
   // ---------------------------------------------------------------------------
 
+  /// Epsilon used when comparing the InteractiveViewer zoom level to 1.0.
+  ///
+  /// A small tolerance avoids false-positive "zoomed" states caused by
+  /// floating-point rounding when the transformation matrix is nominally
+  /// the identity (e.g. immediately after a pinch-to-reset gesture).
+  static const double _kZoomEpsilon = 1e-4;
+
   /// Updates [_isZoomed] whenever the InteractiveViewer transformation changes.
   ///
   /// Triggers a rebuild only when the zoomed-in state actually flips so we
   /// avoid unnecessary rebuilds while the user is actively pinching.
   void _onTransformationChanged() {
     final zoomed =
-        _transformationController.value.getMaxScaleOnAxis() > 1.0 + 1e-4;
+        _transformationController.value.getMaxScaleOnAxis() > 1.0 + _kZoomEpsilon;
     if (zoomed != _isZoomed) {
       setState(() => _isZoomed = zoomed);
     }
@@ -919,11 +926,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       final delta = pos - (_dragLastPos ?? pos);
       _dragLastPos = pos;
       final matrix = _transformationController.value.clone();
+      // Divide by the current zoom so the image follows the finger at a 1:1
+      // pixel ratio regardless of the zoom level. getMaxScaleOnAxis() is
+      // always positive for a valid InteractiveViewer matrix.
       final zoom = matrix.getMaxScaleOnAxis();
-      matrix.translate(
-        zoom > 0 ? delta.dx / zoom : delta.dx,
-        zoom > 0 ? delta.dy / zoom : delta.dy,
-      );
+      matrix.translate(delta.dx / zoom, delta.dy / zoom);
       _transformationController.value = matrix;
       return;
     }
@@ -932,7 +939,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     // image-coordinate space. At zoom level Z and fit-scale S the conversion
     // is: image_delta = viewport_delta / (Z * S).
     final zoom = _transformationController.value.getMaxScaleOnAxis();
-    final effectiveScale = scale * (zoom > 0 ? zoom : 1.0);
+    final effectiveScale = scale * zoom;
 
     if (_activeResizeHandle != null &&
         _selectedPageIdx != null &&

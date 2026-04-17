@@ -156,6 +156,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // Timer used to detect long-press gestures for debug coordinate display.
   Timer? _longPressTimer;
 
+  // Timer used to detect long-press gestures for overlapping-box selection.
+  Timer? _boxSelectionLongPressTimer;
+
   // ---------------------------------------------------------------------------
   // Debug state
   // ---------------------------------------------------------------------------
@@ -218,6 +221,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   @override
   void dispose() {
     _longPressTimer?.cancel();
+    _boxSelectionLongPressTimer?.cancel();
     _transformationController.dispose();
     super.dispose();
   }
@@ -996,6 +1000,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _longPressFired = false;
     _longPressTimer?.cancel();
     _longPressTimer = null;
+    _boxSelectionLongPressTimer?.cancel();
+    _boxSelectionLongPressTimer = null;
     _debugLongPressImageCoords = null;
     _debugLongPressDisplayPos = null;
   }
@@ -1430,6 +1436,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _panGestureDownPosition = null;
                 _longPressTimer?.cancel();
                 _longPressTimer = null;
+                _boxSelectionLongPressTimer?.cancel();
+                _boxSelectionLongPressTimer = null;
                 _longPressFired = false;
               } else {
                 _panGestureDownPosition = event.localPosition;
@@ -1461,10 +1469,60 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   }
                 }
 
-                // Start long-press timer for debug coordinate display (issue 1).
+                // Start box-selection long-press timer (1000 ms): shows a
+                // picker when multiple bounding boxes overlap at the tap point.
+                _boxSelectionLongPressTimer?.cancel();
+                _boxSelectionLongPressTimer = Timer(
+                  const Duration(milliseconds: 1000),
+                  () {
+                    if (!mounted) return;
+                    final lp = _panGestureDownPosition;
+                    if (lp == null) return;
+                    final hits = <_BoxHit>[];
+                    for (var bi = 0; bi < pageBlocks.length; bi++) {
+                      for (var li = 0;
+                          li < pageBlocks[bi].lines.length;
+                          li++) {
+                        for (var ei = 0;
+                            ei < pageBlocks[bi].lines[li].elements.length;
+                            ei++) {
+                          final el =
+                              pageBlocks[bi].lines[li].elements[ei];
+                          final elDisplayW = el.width * scale;
+                          final elDisplayH = el.height * scale;
+                          final boxRect = Rect.fromCenter(
+                            center: Offset(
+                              el.left * scale +
+                                  offsetX +
+                                  elDisplayW / 2,
+                              el.top * scale +
+                                  offsetY +
+                                  elDisplayH / 2,
+                            ),
+                            width: math.max(elDisplayW, _kMinBoxHitSize),
+                            height: math.max(elDisplayH, _kMinBoxHitSize),
+                          );
+                          if (boxRect.contains(lp)) {
+                            hits.add(_BoxHit(
+                              bi: bi,
+                              li: li,
+                              ei: ei,
+                              element: el,
+                            ));
+                          }
+                        }
+                      }
+                    }
+                    if (hits.length < 2) return;
+                    _longPressFired = true;
+                    _showBoxSelectionSheet(hits, pageIndex);
+                  },
+                );
+
+                // Start long-press timer for debug coordinate display (5000 ms).
                 _longPressTimer?.cancel();
                 _longPressTimer = Timer(
-                  const Duration(milliseconds: 600),
+                  const Duration(milliseconds: 5000),
                   () {
                     if (!mounted) return;
                     final lp = _panGestureDownPosition;
@@ -1490,6 +1548,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                     // Movement threshold exceeded: cancel long-press, start drag.
                     _longPressTimer?.cancel();
                     _longPressTimer = null;
+                    _boxSelectionLongPressTimer?.cancel();
+                    _boxSelectionLongPressTimer = null;
                     _panGestureActive = true;
                     _handleEditPanStart(
                       downPos,
@@ -1512,6 +1572,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             onPointerUp: (event) {
               _longPressTimer?.cancel();
               _longPressTimer = null;
+              _boxSelectionLongPressTimer?.cancel();
+              _boxSelectionLongPressTimer = null;
               if (_activePointerPositions.length == 1) {
                 if (_panGestureActive) {
                   _handleEditPanEnd();
@@ -1540,6 +1602,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             onPointerCancel: (event) {
               _longPressTimer?.cancel();
               _longPressTimer = null;
+              _boxSelectionLongPressTimer?.cancel();
+              _boxSelectionLongPressTimer = null;
               _longPressFired = false;
               _activePointerPositions.remove(event.pointer);
               if (_panGestureActive) {
@@ -1662,7 +1726,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double availableHeight,
   ) {
     const labelW = 150.0;
-    const labelH = 52.0;
+    const labelH = 70.0;
     const markerR = 6.0;
     // Clamp label position so it stays inside the canvas.
     final labelLeft =
@@ -1882,6 +1946,78 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       ),
     );
   }
+
+  /// Shows a modal bottom sheet listing all [hits] so the user can pick one.
+  ///
+  /// Called when a 1000 ms long-press is detected and two or more bounding
+  /// boxes overlap at the pressed position.
+  void _showBoxSelectionSheet(List<_BoxHit> hits, int pageIdx) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Text(
+                  'Bounding Box auswählen',
+                  style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ),
+              const Divider(height: 1),
+              ...hits.map(
+                (hit) => ListTile(
+                  leading: const Icon(Icons.crop_square),
+                  title: Text(
+                    hit.element.text.trim().isEmpty
+                        ? '(leer)'
+                        : hit.element.text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    'x:${hit.element.left.toStringAsFixed(0)} '
+                    'y:${hit.element.top.toStringAsFixed(0)} '
+                    'w:${hit.element.width.toStringAsFixed(0)} '
+                    'h:${hit.element.height.toStringAsFixed(0)} px',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    setState(() {
+                      _selectedPageIdx = pageIdx;
+                      _selectedBlockIdx = hit.bi;
+                      _selectedLineIdx = hit.li;
+                      _selectedElemIdx = hit.ei;
+                    });
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Lightweight record that identifies a hit bounding box within the page tree.
+class _BoxHit {
+  final int bi;
+  final int li;
+  final int ei;
+  final OcrTextElement element;
+
+  const _BoxHit({
+    required this.bi,
+    required this.li,
+    required this.ei,
+    required this.element,
+  });
 }
 
 /// Dialog for correcting a single OCR word.

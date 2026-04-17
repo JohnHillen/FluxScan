@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Step 2: Enhance images and run OCR – show progress dialog.
       _progressNotifier.value = 0.0;
-      _showProcessingDialog('Verarbeitung…');
+      _showProcessingDialog('Processing…');
       progressDialogShown = true;
 
       final processed = await _scannerService.processImages(
@@ -181,7 +181,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // The result also carries the original page dimensions in PDF points.
       // Progress: 0–50 % for rendering, 50–100 % for OCR processing.
       _progressNotifier.value = 0.0;
-      _showProcessingDialog('PDF wird importiert…');
+      _showProcessingDialog('Importing PDF…');
       progressDialogShown = true;
 
       final importResult = await _pdfImportService.renderPagesToImages(

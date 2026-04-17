@@ -112,6 +112,21 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   _ResizeHandle? _activeResizeHandle;
 
   // ---------------------------------------------------------------------------
+  // Raw-pointer tracking (used by the Listener that replaces GestureDetector)
+  // ---------------------------------------------------------------------------
+
+  // Maps each active pointer id to its current local position.
+  final Map<int, Offset> _activePointerPositions = {};
+
+  // Position of the first (and only) pointer when it was put down; cleared
+  // when the pointer is lifted or when a second pointer joins.
+  Offset? _panGestureDownPosition;
+
+  // True once the single active pointer has moved more than kTouchSlop and
+  // _handleEditPanStart has been called.
+  bool _panGestureActive = false;
+
+  // ---------------------------------------------------------------------------
   // Init / lifecycle
   // ---------------------------------------------------------------------------
 
@@ -790,6 +805,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _selectedLineIdx = null;
     _selectedElemIdx = null;
     _activeResizeHandle = null;
+    _activePointerPositions.clear();
+    _panGestureDownPosition = null;
+    _panGestureActive = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -1200,26 +1218,81 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             offsetY: offsetY,
           );
 
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapUp: (d) => _handleEditTap(
-              d.localPosition,
-              pageIndex,
-              pageBlocks,
-              scale,
-              offsetX,
-              offsetY,
-            ),
-            onPanStart: (d) => _handleEditPanStart(
-              d.localPosition,
-              pageIndex,
-              pageBlocks,
-              scale,
-              offsetX,
-              offsetY,
-            ),
-            onPanUpdate: (d) => _handleEditPanUpdate(d.localPosition, scale),
-            onPanEnd: (_) => _handleEditPanEnd(),
+          return Listener(
+            // A Listener observes raw pointer events without entering Flutter's
+            // gesture arena, so it never competes with InteractiveViewer's
+            // ScaleGestureRecognizer. This allows pinch-to-zoom to work while
+            // we still intercept single-finger taps and drags for box editing.
+            onPointerDown: (event) {
+              _activePointerPositions[event.pointer] = event.localPosition;
+              if (_activePointerPositions.length > 1) {
+                // A second finger has joined – cancel any ongoing box editing
+                // and let InteractiveViewer handle the multi-touch zoom.
+                if (_panGestureActive) {
+                  _handleEditPanEnd();
+                  _panGestureActive = false;
+                }
+                _panGestureDownPosition = null;
+              } else {
+                _panGestureDownPosition = event.localPosition;
+                _panGestureActive = false;
+              }
+            },
+            onPointerMove: (event) {
+              _activePointerPositions[event.pointer] = event.localPosition;
+              if (_activePointerPositions.length == 1) {
+                final downPos = _panGestureDownPosition;
+                if (downPos != null) {
+                  if (!_panGestureActive &&
+                      (event.localPosition - downPos).distance > kTouchSlop) {
+                    // Movement threshold exceeded: start the drag gesture.
+                    _panGestureActive = true;
+                    _handleEditPanStart(
+                      downPos,
+                      pageIndex,
+                      pageBlocks,
+                      scale,
+                      offsetX,
+                      offsetY,
+                    );
+                    // Normalise _dragLastPos to the current position so the
+                    // first _handleEditPanUpdate delta is zero (no jump).
+                    _dragLastPos = event.localPosition;
+                  }
+                  if (_panGestureActive) {
+                    _handleEditPanUpdate(event.localPosition, scale);
+                  }
+                }
+              }
+            },
+            onPointerUp: (event) {
+              if (_activePointerPositions.length == 1) {
+                if (_panGestureActive) {
+                  _handleEditPanEnd();
+                  _panGestureActive = false;
+                } else if (_panGestureDownPosition != null) {
+                  // Pointer lifted without significant movement → treat as tap.
+                  _handleEditTap(
+                    event.localPosition,
+                    pageIndex,
+                    pageBlocks,
+                    scale,
+                    offsetX,
+                    offsetY,
+                  );
+                }
+                _panGestureDownPosition = null;
+              }
+              _activePointerPositions.remove(event.pointer);
+            },
+            onPointerCancel: (event) {
+              _activePointerPositions.remove(event.pointer);
+              if (_panGestureActive) {
+                _handleEditPanEnd();
+                _panGestureActive = false;
+              }
+              _panGestureDownPosition = null;
+            },
             child: content,
           );
         },

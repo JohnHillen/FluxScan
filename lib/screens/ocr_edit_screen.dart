@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -129,6 +130,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // Resize sub-state: active corner handle being dragged.
   _ResizeHandle? _activeResizeHandle;
 
+  // The handle that the finger is currently pressing (set on pointer-down,
+  // before any drag movement starts; cleared on pointer-up / cancel).
+  _ResizeHandle? _pressedResizeHandle;
+
   // ---------------------------------------------------------------------------
   // Raw-pointer tracking (used by the Listener that replaces GestureDetector)
   // ---------------------------------------------------------------------------
@@ -143,6 +148,24 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   // True once the single active pointer has moved more than kTouchSlop and
   // _handleEditPanStart has been called.
   bool _panGestureActive = false;
+
+  // True when the long-press timer has fired; suppresses the normal tap on
+  // the subsequent pointer-up event.
+  bool _longPressFired = false;
+
+  // Timer used to detect long-press gestures for debug coordinate display.
+  Timer? _longPressTimer;
+
+  // ---------------------------------------------------------------------------
+  // Debug state
+  // ---------------------------------------------------------------------------
+
+  /// Image-pixel coordinates of the last long-press position (null when hidden).
+  Offset? _debugLongPressImageCoords;
+
+  /// Display (Stack) coordinates of the last long-press (used to position the
+  /// debug label near the tap point).
+  Offset? _debugLongPressDisplayPos;
 
   // ---------------------------------------------------------------------------
   // Init / lifecycle
@@ -194,6 +217,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   @override
   void dispose() {
+    _longPressTimer?.cancel();
     _transformationController.dispose();
     super.dispose();
   }
@@ -486,6 +510,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double offsetX,
     double offsetY,
   ) {
+    // Clear the long-press debug overlay on any tap.
+    if (_debugLongPressImageCoords != null) {
+      _debugLongPressImageCoords = null;
+      _debugLongPressDisplayPos = null;
+    }
     for (var bi = 0; bi < blocks.length; bi++) {
       for (var li = 0; li < blocks[bi].lines.length; li++) {
         for (var ei = 0;
@@ -591,6 +620,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         selWidth,
         selHeight,
         hitSize: _kHandleHitSizeScaleMode,
+        minSpread: _kMinHandleSpread,
       );
       if (handle != null) {
         _pushUndo();
@@ -705,8 +735,17 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   /// in display / Stack coordinates).  The default [hitSize] is
   /// [_kHandleHitSize]; pass [_kHandleHitSizeScaleMode] for a larger target
   /// when the scale FAB mode is active.
+  ///
+  /// When [minSpread] > 0 the effective corner positions are spread out so
+  /// that the distance between adjacent corners is at least [minSpread].  This
+  /// ensures that very small boxes still have reachable, non-overlapping handle
+  /// hit areas (used together with [_kHandleHitSizeScaleMode]).
   static const double _kHandleHitSize = 24.0;
   static const double _kHandleHitSizeScaleMode = 48.0;
+
+  /// Minimum spread (display px) applied in scale-FAB mode so handle
+  /// hit areas never overlap even for very small boxes.
+  static const double _kMinHandleSpread = _kHandleHitSizeScaleMode;
 
   /// Minimum hit size (scene pixels) used when hit-testing a bounding box so
   /// that very small boxes can still be tapped and dragged reliably.
@@ -716,6 +755,28 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
   /// 80 % leaves a small top/bottom margin so descenders are not clipped.
   static const double _kOcrTextHeightRatio = 0.80;
 
+  /// Returns the four effective corner positions for resize handles, ensuring
+  /// adjacent corners are at least [minSpread] pixels apart.  For large boxes
+  /// the actual corners are returned unchanged.
+  static Map<_ResizeHandle, Offset> _effectiveHandleCorners(
+    double left,
+    double top,
+    double width,
+    double height, {
+    double minSpread = 0,
+  }) {
+    final cx = left + width / 2;
+    final cy = top + height / 2;
+    final hw = math.max(width, minSpread) / 2;
+    final hh = math.max(height, minSpread) / 2;
+    return {
+      _ResizeHandle.topLeft: Offset(cx - hw, cy - hh),
+      _ResizeHandle.topRight: Offset(cx + hw, cy - hh),
+      _ResizeHandle.bottomLeft: Offset(cx - hw, cy + hh),
+      _ResizeHandle.bottomRight: Offset(cx + hw, cy + hh),
+    };
+  }
+
   static _ResizeHandle? _hitTestResizeHandle(
     Offset pos,
     double left,
@@ -723,14 +784,10 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     double width,
     double height, {
     double hitSize = _kHandleHitSize,
+    double minSpread = 0,
   }) {
     final h = hitSize / 2;
-    final corners = {
-      _ResizeHandle.topLeft: Offset(left, top),
-      _ResizeHandle.topRight: Offset(left + width, top),
-      _ResizeHandle.bottomLeft: Offset(left, top + height),
-      _ResizeHandle.bottomRight: Offset(left + width, top + height),
-    };
+    final corners = _effectiveHandleCorners(left, top, width, height, minSpread: minSpread);
     for (final entry in corners.entries) {
       final rect = Rect.fromCenter(center: entry.value, width: h * 2, height: h * 2);
       if (rect.contains(pos)) return entry.key;
@@ -930,11 +987,17 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _selectedLineIdx = null;
     _selectedElemIdx = null;
     _activeResizeHandle = null;
+    _pressedResizeHandle = null;
     _activeFabMode = null;
     _isImagePanning = false;
     _activePointerPositions.clear();
     _panGestureDownPosition = null;
     _panGestureActive = false;
+    _longPressFired = false;
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+    _debugLongPressImageCoords = null;
+    _debugLongPressDisplayPos = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -1365,9 +1428,56 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   _panGestureActive = false;
                 }
                 _panGestureDownPosition = null;
+                _longPressTimer?.cancel();
+                _longPressTimer = null;
+                _longPressFired = false;
               } else {
                 _panGestureDownPosition = event.localPosition;
                 _panGestureActive = false;
+                _longPressFired = false;
+
+                // Scale mode: detect pressed handle immediately on finger-down
+                // so the handle lights up before any drag movement (issue 5).
+                if (_activeFabMode == _FabMode.scale &&
+                    _selectedPageIdx == pageIndex &&
+                    _selectedBlockIdx != null &&
+                    _selectedLineIdx != null &&
+                    _selectedElemIdx != null &&
+                    _selectedBlockIdx! < pageBlocks.length) {
+                  final sel = pageBlocks[_selectedBlockIdx!]
+                      .lines[_selectedLineIdx!]
+                      .elements[_selectedElemIdx!];
+                  final pressed = _hitTestResizeHandle(
+                    event.localPosition,
+                    sel.left * scale + offsetX,
+                    sel.top * scale + offsetY,
+                    sel.width * scale,
+                    sel.height * scale,
+                    hitSize: _kHandleHitSizeScaleMode,
+                    minSpread: _kMinHandleSpread,
+                  );
+                  if (pressed != null) {
+                    setState(() => _pressedResizeHandle = pressed);
+                  }
+                }
+
+                // Start long-press timer for debug coordinate display (issue 1).
+                _longPressTimer?.cancel();
+                _longPressTimer = Timer(
+                  const Duration(milliseconds: 600),
+                  () {
+                    if (!mounted) return;
+                    final lp = _panGestureDownPosition;
+                    if (lp == null) return;
+                    final imgX = (lp.dx - offsetX) / scale;
+                    final imgY = (lp.dy - offsetY) / scale;
+                    _longPressFired = true;
+                    setState(() {
+                      _debugLongPressImageCoords = Offset(imgX, imgY);
+                      _debugLongPressDisplayPos = lp;
+                    });
+                  },
+                );
               }
             },
             onPointerMove: (event) {
@@ -1377,7 +1487,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 if (downPos != null) {
                   if (!_panGestureActive &&
                       (event.localPosition - downPos).distance > kTouchSlop) {
-                    // Movement threshold exceeded: start the drag gesture.
+                    // Movement threshold exceeded: cancel long-press, start drag.
+                    _longPressTimer?.cancel();
+                    _longPressTimer = null;
                     _panGestureActive = true;
                     _handleEditPanStart(
                       downPos,
@@ -1398,12 +1510,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
               }
             },
             onPointerUp: (event) {
+              _longPressTimer?.cancel();
+              _longPressTimer = null;
               if (_activePointerPositions.length == 1) {
                 if (_panGestureActive) {
                   _handleEditPanEnd();
                   _panGestureActive = false;
-                } else if (_panGestureDownPosition != null) {
-                  // Pointer lifted without significant movement → treat as tap.
+                } else if (!_longPressFired &&
+                    _panGestureDownPosition != null) {
+                  // Pointer lifted without significant movement or long-press
+                  // → treat as tap.
                   _handleEditTap(
                     event.localPosition,
                     pageIndex,
@@ -1414,16 +1530,26 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   );
                 }
                 _panGestureDownPosition = null;
+                _longPressFired = false;
+              }
+              if (_pressedResizeHandle != null) {
+                setState(() => _pressedResizeHandle = null);
               }
               _activePointerPositions.remove(event.pointer);
             },
             onPointerCancel: (event) {
+              _longPressTimer?.cancel();
+              _longPressTimer = null;
+              _longPressFired = false;
               _activePointerPositions.remove(event.pointer);
               if (_panGestureActive) {
                 _handleEditPanEnd();
                 _panGestureActive = false;
               }
               _panGestureDownPosition = null;
+              if (_pressedResizeHandle != null) {
+                setState(() => _pressedResizeHandle = null);
+              }
             },
             child: content,
           );
@@ -1498,17 +1624,154 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
               offsetX: offsetX,
               offsetY: offsetY,
             ),
+
+          // Debug: selected-box info panel (issue 2).
+          if (_selectedPageIdx == pageIndex &&
+              _selectedBlockIdx != null &&
+              _selectedLineIdx != null &&
+              _selectedElemIdx != null &&
+              _selectedBlockIdx! < pageBlocks.length)
+            _buildSelectedBoxDebugOverlay(
+              pageBlocks[_selectedBlockIdx!]
+                  .lines[_selectedLineIdx!]
+                  .elements[_selectedElemIdx!],
+            ),
+
+          // Debug: long-press coordinate label (issue 1).
+          if (pageIndex == _currentPage &&
+              _debugLongPressImageCoords != null &&
+              _debugLongPressDisplayPos != null)
+            _buildLongPressDebugOverlay(
+              _debugLongPressImageCoords!,
+              _debugLongPressDisplayPos!,
+              availableWidth,
+              availableHeight,
+            ),
         ],
+      ),
+    );
+  }
+
+  /// Debug overlay: shows image-pixel coordinates at the long-press point.
+  ///
+  /// Tapping the label dismisses it.
+  Widget _buildLongPressDebugOverlay(
+    Offset imageCoords,
+    Offset displayPos,
+    double availableWidth,
+    double availableHeight,
+  ) {
+    const labelW = 150.0;
+    const labelH = 52.0;
+    const markerR = 6.0;
+    // Clamp label position so it stays inside the canvas.
+    final labelLeft =
+        (displayPos.dx - labelW / 2).clamp(4.0, availableWidth - labelW - 4);
+    final labelTop = displayPos.dy > labelH + markerR + 8
+        ? displayPos.dy - labelH - markerR - 8
+        : displayPos.dy + markerR + 8;
+
+    return Positioned.fill(
+      child: Stack(
+        children: [
+        // Cross-hair marker at the tap point.
+        Positioned(
+          left: displayPos.dx - markerR,
+          top: displayPos.dy - markerR,
+          width: markerR * 2,
+          height: markerR * 2,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.red,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 1.5),
+            ),
+          ),
+        ),
+        // Coordinate label.
+        Positioned(
+          left: labelLeft,
+          top: labelTop,
+          width: labelW,
+          height: labelH,
+          child: GestureDetector(
+            onTap: () => setState(() {
+              _debugLongPressImageCoords = null;
+              _debugLongPressDisplayPos = null;
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.78),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.red.withOpacity(0.7)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    '📍 Bild-Koordinaten',
+                    style: TextStyle(
+                      color: Colors.yellow,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'x: ${imageCoords.dx.toStringAsFixed(1)} px\n'
+                    'y: ${imageCoords.dy.toStringAsFixed(1)} px',
+                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+      ),
+    );
+  }
+
+  /// Debug overlay: shows the selected element's size and position in image
+  /// pixels as a small panel at the top-left of the Stack.
+  Widget _buildSelectedBoxDebugOverlay(OcrTextElement element) {
+    return Positioned(
+      top: 6,
+      left: 6,
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.72),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.blue.withOpacity(0.7)),
+          ),
+          child: Text(
+            '📦 x:${element.left.toStringAsFixed(0)} '
+            'y:${element.top.toStringAsFixed(0)}\n'
+            'w:${element.width.toStringAsFixed(0)} '
+            'h:${element.height.toStringAsFixed(0)} px',
+            style: const TextStyle(color: Colors.white, fontSize: 11),
+          ),
+        ),
       ),
     );
   }
 
   /// Builds four corner resize-handle widgets for the given [element].
   ///
-  /// Each handle is a small filled circle rendered at a corner of the
-  /// selected bounding box. The page-level [GestureDetector] detects drags
-  /// that start inside a handle's hit area (see [_hitTestResizeHandle]).
-  static const double _kHandleVisualSize = 12.0;
+  /// Each handle is a filled circle rendered at the effective corner of the
+  /// selected bounding box (corners are spread out by at least
+  /// [_kMinHandleSpread] so they remain reachable even on very small boxes).
+  /// The handle that is currently pressed or being dragged is highlighted
+  /// with a larger size and a white border (issue 5).
+  ///
+  /// The page-level [Listener] detects drags that start inside a handle's
+  /// hit area (see [_hitTestResizeHandle]).
+  static const double _kHandleVisualSize = 14.0;
+  static const double _kHandleActiveSizeBoost = 6.0;
 
   List<Widget> _buildResizeHandles({
     required OcrTextElement element,
@@ -1521,27 +1784,44 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     final elWidth = element.width * scale;
     final elHeight = element.height * scale;
 
-    // Cap handle size at 50% of the bounding-box height so handles never
-    // obscure the text inside small boxes.
-    final handleSize = math.min(_kHandleVisualSize, elHeight * 0.5);
+    // Use effective corners so handles are always reachable even for tiny boxes.
+    final corners = _effectiveHandleCorners(
+      elLeft,
+      elTop,
+      elWidth,
+      elHeight,
+      minSpread: _kMinHandleSpread,
+    );
 
-    final corners = [
-      Offset(elLeft, elTop),
-      Offset(elLeft + elWidth, elTop),
-      Offset(elLeft, elTop + elHeight),
-      Offset(elLeft + elWidth, elTop + elHeight),
-    ];
+    return corners.entries.map((entry) {
+      final handle = entry.key;
+      final c = entry.value;
+      final isActive =
+          handle == _pressedResizeHandle || handle == _activeResizeHandle;
+      final size = isActive
+          ? _kHandleVisualSize + _kHandleActiveSizeBoost
+          : _kHandleVisualSize;
 
-    return corners.map((c) {
       return Positioned(
-        left: c.dx - handleSize / 2,
-        top: c.dy - handleSize / 2,
-        width: handleSize,
-        height: handleSize,
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.deepOrange,
+        left: c.dx - size / 2,
+        top: c.dy - size / 2,
+        width: size,
+        height: size,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 80),
+          decoration: BoxDecoration(
+            color: isActive ? Colors.orange : Colors.deepOrange,
             shape: BoxShape.circle,
+            border: isActive
+                ? Border.all(color: Colors.white, width: 2.5)
+                : null,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(isActive ? 0.5 : 0.3),
+                blurRadius: isActive ? 4 : 2,
+                spreadRadius: 0,
+              ),
+            ],
           ),
         ),
       );

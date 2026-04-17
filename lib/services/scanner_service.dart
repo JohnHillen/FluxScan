@@ -238,11 +238,15 @@ class ScannerService {
   /// the image at the same index in [imagePaths]. A `null` entry means
   /// no perspective correction for that page.
   ///
+  /// [onProgress] is called after each page is fully processed (enhanced +
+  /// OCR complete) with the number of pages done and the total page count.
+  ///
   /// Returns a [ProcessedScan] containing the enhanced image paths and
   /// the combined OCR text from all pages.
   Future<ProcessedScan> processImages(
     List<String> imagePaths, {
     List<DocumentCorners?>? corners,
+    void Function(int current, int total)? onProgress,
   }) async {
     final originalPaths = <String>[];
     final enhancedPaths = <String>[];
@@ -276,6 +280,8 @@ class ScannerService {
         allText.write('\n\n--- Page Break ---\n\n');
       }
       allText.write(pageText);
+
+      onProgress?.call(i + 1, imagePaths.length);
     }
 
     return ProcessedScan(

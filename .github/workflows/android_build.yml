@@ -1,5 +1,7 @@
 name: Android Build
 
+on:
+
 permissions:
   contents: read
 

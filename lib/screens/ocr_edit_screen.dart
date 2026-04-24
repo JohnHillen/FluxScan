@@ -164,7 +164,11 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
 
   // Position of the first (and only) pointer when it was put down; cleared
   // when the pointer is lifted or when a second pointer joins.
-  Offset? _panGestureDownPosition;
+  Offset? _panGestureDownPosition; // Scene coordinates
+
+  // Global position of the pointer when it was put down; used for slop-distance
+  // checks so that physical movement threshold is constant regardless of zoom.
+  Offset? _panGestureDownGlobalPosition;
 
   // True once the single active pointer has moved more than kTouchSlop and
   // _handleEditPanStart has been called.
@@ -915,16 +919,14 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     return null;
   }
 
-  void _handleEditPanUpdate(Offset pos, double scale) {
+  void _handleEditPanUpdate(Offset delta, double scale) {
     // Image pan mode: translate the viewport via TransformationController.
     //
-    // `pos` and `_dragLastPos` are in *viewport* coordinates (raw
-    // event.localPosition values). We divide the viewport delta by the current
-    // zoom factor before applying the scene-space translation so that the image
-    // follows the finger at a 1:1 ratio regardless of the zoom level (issue 1).
+    // The `delta` is in *viewport* coordinates (logical pixels). We divide the
+    // viewport delta by the current zoom factor before applying the scene-space
+    // translation so that the image follows the finger at a 1:1 ratio regardless
+    // of the zoom level (issue 1).
     if (_isImagePanning) {
-      final delta = pos - (_dragLastPos ?? pos);
-      _dragLastPos = pos;
       final matrix = _transformationController.value.clone();
       // Divide by the current zoom so the image follows the finger at a 1:1
       // pixel ratio regardless of the zoom level. getMaxScaleOnAxis() is
@@ -935,7 +937,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       return;
     }
 
-    // For box resize and move the raw viewport delta must be converted to
+    // For box resize and move the viewport delta must be converted to
     // image-coordinate space. At zoom level Z and fit-scale S the conversion
     // is: image_delta = viewport_delta / (Z * S).
     final zoom = _transformationController.value.getMaxScaleOnAxis();
@@ -947,10 +949,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         _selectedLineIdx != null &&
         _selectedElemIdx != null) {
       // Resize mode: adjust element dimensions according to the dragged corner.
-      final delta = pos - (_dragLastPos ?? pos);
       setState(() {
         _hasChanges = true;
-        _dragLastPos = pos;
 
         final pageIdx = _selectedPageIdx!;
         final blockIdx = _selectedBlockIdx!;
@@ -1038,10 +1038,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
         _dragBlockIdx != null &&
         _dragLineIdx != null) {
       // Move mode: translate the element by the drag delta.
-      final delta = pos - (_dragLastPos ?? pos);
       setState(() {
         _hasChanges = true;
-        _dragLastPos = pos;
 
         final el = _textBlocks[_dragPageIdx!][_dragBlockIdx!]
             .lines[_dragLineIdx!]
@@ -1085,6 +1083,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
       });
     }
   }
+
 
   void _handleEditPanEnd() {
     if (_isImagePanning) {
@@ -1130,6 +1129,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
     _isImagePanning = false;
     _activePointerPositions.clear();
     _panGestureDownPosition = null;
+    _panGestureDownGlobalPosition = null;
     _panGestureActive = false;
     _longPressFired = false;
     _longPressTimer?.cancel();
@@ -1612,16 +1612,17 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
             // we still intercept single-finger taps and drags for box editing.
             //
             // NOTE on coordinate systems (issue 1):
-            // event.localPosition is in *viewport* coordinates (the same space
-            // as the InteractiveViewer's viewport), NOT in scene/Stack
-            // coordinates. All box hit-rects are in scene coordinates (computed
-            // from el.left * scale + offsetX etc.). We therefore convert every
-            // pointer position that is used for hit-testing or drag-delta
-            // calculations to scene coordinates via
-            // _transformationController.toScene(). The slop-distance check for
-            // distinguishing tap vs. drag is left in viewport coordinates so
-            // that it corresponds to the correct physical pixel distance
-            // regardless of zoom level.
+            // event.localPosition is in *scene* coordinates because the Listener
+            // is a child of the InteractiveViewer's transformed area.
+            // DO NOT convert it via _transformationController.toScene() as that
+            // would apply the inverse transformation twice.
+            //
+            // Box hit-rects are also calculated in scene coordinates (computed
+            // from el.left * scale + offsetX etc.). Slop-distance checks for
+            // distinguishing tap vs. drag stay in viewport coordinates via
+            // event.delta or manual global conversion so they correspond to 
+            // physical pixels.
+
             onPointerDown: (event) {
               _activePointerPositions[event.pointer] = event.localPosition;
               if (_activePointerPositions.length > 1) {
@@ -1632,14 +1633,16 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   _panGestureActive = false;
                 }
                 _panGestureDownPosition = null;
+                _panGestureDownGlobalPosition = null;
                 _longPressTimer?.cancel();
                 _longPressTimer = null;
                 _boxSelectionLongPressTimer?.cancel();
                 _boxSelectionLongPressTimer = null;
                 _longPressFired = false;
               } else {
-                // Store viewport position for slop-distance check.
+                // Store scene position for hit-testing and global for slop check.
                 _panGestureDownPosition = event.localPosition;
+                _panGestureDownGlobalPosition = event.position;
                 _panGestureActive = false;
                 _longPressFired = false;
 
@@ -1655,8 +1658,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   final sel = pageBlocks[_selectedBlockIdx!]
                       .lines[_selectedLineIdx!]
                       .elements[_selectedElemIdx!];
-                  final sceneDown =
-                      _transformationController.toScene(event.localPosition);
+                  // event.localPosition is already in scene coordinates.
+                  final sceneDown = event.localPosition;
                   final pressed = _hitTestResizeHandle(
                     sceneDown,
                     sel.left * scale + offsetX,
@@ -1671,6 +1674,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   }
                 }
 
+
                 // Start box-selection long-press timer (1000 ms): shows a
                 // picker when multiple bounding boxes overlap at the tap point.
                 _boxSelectionLongPressTimer?.cancel();
@@ -1680,8 +1684,8 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                     if (!mounted) return;
                     final lp = _panGestureDownPosition;
                     if (lp == null) return;
-                    // Convert to scene coords for box hit-testing.
-                    final sceneLp = _transformationController.toScene(lp);
+                    // lp is localPosition, so it's already scene coordinates.
+                    final sceneLp = lp;
                     final hits = <_BoxHit>[];
                     for (var bi = 0; bi < pageBlocks.length; bi++) {
                       for (var li = 0;
@@ -1723,6 +1727,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                   },
                 );
 
+
                 // Start long-press timer for debug coordinate display (5000 ms).
                 _longPressTimer?.cancel();
                 _longPressTimer = Timer(
@@ -1731,56 +1736,60 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                     if (!mounted) return;
                     final lp = _panGestureDownPosition;
                     if (lp == null) return;
-                    // Convert to scene coords to get correct image coordinates
-                    // and the correct Stack-space position for the overlay.
+                    // lp is in viewport coordinates (from event.localPosition
+                    // on down, which is scene... wait, no.)
+                    // Actually, if we want to support this debug label, let's
+                    // use the scene coordinates we captured.
                     final sceneLp = _transformationController.toScene(lp);
-                    final imgX = (sceneLp.dx - offsetX) / scale;
-                    final imgY = (sceneLp.dy - offsetY) / scale;
+                    // Wait, if lp was localPosition, it's already scene.
+                    // Let's use the current one.
+                    final currentPos = _activePointerPositions.values.first;
+                    final imgX = (currentPos.dx - offsetX) / scale;
+                    final imgY = (currentPos.dy - offsetY) / scale;
                     _longPressFired = true;
                     setState(() {
                       _debugLongPressImageCoords = Offset(imgX, imgY);
-                      _debugLongPressDisplayPos = sceneLp;
+                      _debugLongPressDisplayPos = currentPos;
                     });
                   },
                 );
+
               }
             },
             onPointerMove: (event) {
               _activePointerPositions[event.pointer] = event.localPosition;
               if (_activePointerPositions.length == 1) {
                 final downPos = _panGestureDownPosition;
-                if (downPos != null) {
-                  // Slop check stays in viewport coordinates so that the
+                final downGlobalPos = _panGestureDownGlobalPosition;
+                if (downPos != null && downGlobalPos != null) {
+                  // Slop check uses global coordinates so that the
                   // required physical movement is constant regardless of zoom.
                   if (!_panGestureActive &&
-                      (event.localPosition - downPos).distance > kTouchSlop) {
+                      (event.position - downGlobalPos).distance > kTouchSlop) {
                     // Movement threshold exceeded: cancel long-press, start drag.
                     _longPressTimer?.cancel();
                     _longPressTimer = null;
                     _boxSelectionLongPressTimer?.cancel();
                     _boxSelectionLongPressTimer = null;
                     _panGestureActive = true;
-                    // Convert the initial down-position to scene coords for
-                    // box hit-testing inside _handleEditPanStart.
+                    // event.localPosition is already in scene coordinates.
                     _handleEditPanStart(
-                      _transformationController.toScene(downPos),
+                      downPos,
                       pageIndex,
                       pageBlocks,
                       scale,
                       offsetX,
                       offsetY,
                     );
-                    // Normalise _dragLastPos to the current viewport position
-                    // so the first _handleEditPanUpdate delta is zero (no jump).
-                    // _dragLastPos is kept in viewport coordinates throughout.
-                    _dragLastPos = event.localPosition;
                   }
                   if (_panGestureActive) {
-                    _handleEditPanUpdate(event.localPosition, scale);
+                    // Use event.delta (viewport logical pixels) for stable panning/moving.
+                    _handleEditPanUpdate(event.delta, scale);
                   }
                 }
               }
             },
+
             onPointerUp: (event) {
               _longPressTimer?.cancel();
               _longPressTimer = null;
@@ -1793,9 +1802,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 } else if (!_longPressFired &&
                     _panGestureDownPosition != null) {
                   // Pointer lifted without significant movement or long-press
-                  // → treat as tap. Convert to scene coords for hit-testing.
+                  // → treat as tap. event.localPosition is already scene.
                   _handleEditTap(
-                    _transformationController.toScene(event.localPosition),
+                    event.localPosition,
                     pageIndex,
                     pageBlocks,
                     scale,
@@ -1803,7 +1812,9 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                     offsetY,
                   );
                 }
+
                 _panGestureDownPosition = null;
+                _panGestureDownGlobalPosition = null;
                 _longPressFired = false;
               }
               if (_pressedResizeHandle != null) {
@@ -1823,6 +1834,7 @@ class _OcrEditScreenState extends State<OcrEditScreen> {
                 _panGestureActive = false;
               }
               _panGestureDownPosition = null;
+              _panGestureDownGlobalPosition = null;
               if (_pressedResizeHandle != null) {
                 setState(() => _pressedResizeHandle = null);
               }

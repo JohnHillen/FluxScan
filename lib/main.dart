@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import 'screens/home_screen.dart';
@@ -12,7 +13,11 @@ void main() {
   // Required when using PdfDocument directly (without a pdfrx viewer widget)
   // to ensure the cache directory and engine are properly initialised.
   pdfrxFlutterInitialize();
-  runApp(const FluxScanApp());
+  runApp(
+    const ProviderScope(
+      child: FluxScanApp(),
+    ),
+  );
 }
 
 /// Root application widget with Material 3 theming.

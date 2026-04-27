@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'dart:convert';
 
 import '../services/scanner_service.dart';
@@ -21,6 +22,9 @@ class ScanDocument {
 
   /// File path to the generated searchable PDF, if available.
   final String? pdfPath;
+  
+  /// File path to the original PDF for lazy rendering.
+  final String? sourcePdfPath;
 
   /// Timestamp when the document was first scanned.
   final DateTime createdAt;
@@ -34,6 +38,12 @@ class ScanDocument {
   /// with bounding box positions and nested [OcrTextLine]/[OcrTextElement]
   /// data. `null` for documents created before word-level OCR was stored.
   final List<List<OcrTextBlock>>? textBlocks;
+  
+  /// The resolved pixel dimensions of each page.
+  /// 
+  /// For imported PDFs, these are the dimensions of the page at the render scale (3.0x).
+  /// For physical scans, these are the dimensions of the processed images.
+  final List<Size?>? imageSizes;
 
   /// Number of pages in this document.
   int get pageCount => imagePaths.length;
@@ -44,9 +54,11 @@ class ScanDocument {
     required this.imagePaths,
     this.ocrText = '',
     this.pdfPath,
+    this.sourcePdfPath,
     required this.createdAt,
     required this.updatedAt,
     this.textBlocks,
+    this.imageSizes,
   });
 
   /// Creates a copy of this document with the given fields replaced.
@@ -56,9 +68,11 @@ class ScanDocument {
     List<String>? imagePaths,
     String? ocrText,
     String? pdfPath,
+    String? sourcePdfPath,
     DateTime? createdAt,
     DateTime? updatedAt,
     List<List<OcrTextBlock>>? textBlocks,
+    List<Size?>? imageSizes,
   }) {
     return ScanDocument(
       id: id ?? this.id,
@@ -66,9 +80,11 @@ class ScanDocument {
       imagePaths: imagePaths ?? this.imagePaths,
       ocrText: ocrText ?? this.ocrText,
       pdfPath: pdfPath ?? this.pdfPath,
+      sourcePdfPath: sourcePdfPath ?? this.sourcePdfPath,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       textBlocks: textBlocks ?? this.textBlocks,
+      imageSizes: imageSizes ?? this.imageSizes,
     );
   }
 
@@ -80,11 +96,16 @@ class ScanDocument {
       'imagePaths': imagePaths,
       'ocrText': ocrText,
       'pdfPath': pdfPath,
+      'sourcePdfPath': sourcePdfPath,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       if (textBlocks != null)
         'textBlocks': textBlocks!
             .map((page) => page.map((b) => b.toJson()).toList())
+            .toList(),
+      if (imageSizes != null)
+        'imageSizes': imageSizes!
+            .map((s) => s != null ? {'w': s.width, 'h': s.height} : null)
             .toList(),
     };
   }
@@ -104,15 +125,24 @@ class ScanDocument {
           .toList();
     }
 
+    List<Size?>? imageSizes;
+    if (json['imageSizes'] != null) {
+      imageSizes = (json['imageSizes'] as List<dynamic>)
+          .map((s) => s != null ? Size((s['w'] as num).toDouble(), (s['h'] as num).toDouble()) : null)
+          .toList();
+    }
+
     return ScanDocument(
       id: json['id'] as String,
       title: json['title'] as String,
       imagePaths: List<String>.from(json['imagePaths'] as List),
       ocrText: json['ocrText'] as String? ?? '',
       pdfPath: json['pdfPath'] as String?,
+      sourcePdfPath: json['sourcePdfPath'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
       textBlocks: textBlocks,
+      imageSizes: imageSizes,
     );
   }
 

@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:uuid/uuid.dart';
 
 import 'scanner_service.dart';
@@ -85,6 +87,8 @@ class PdfService {
       producer: 'FluxScan',
     );
 
+    final font = await PdfGoogleFonts.robotoRegular();
+
     for (var i = 0; i < imagePaths.length; i++) {
       final imageFile = File(imagePaths[i]);
       final imageBytes = await imageFile.readAsBytes();
@@ -138,46 +142,24 @@ class PdfService {
                 pw.Positioned.fill(
                   child: pw.Image(image, fit: pw.BoxFit.fill),
                 ),
-                // Invisible OCR text overlay for searchability.
-                // Uses element-level (word) bounding boxes with FittedBox
-                // stretching to ensure text highlight positions match exactly.
-                ...pageBlocks.expand((block) {
-                  return block.lines.expand((line) {
-                    return line.elements
-                        .where(
-                          (element) =>
-                              element.text.isNotEmpty &&
-                              element.width > 0 &&
-                              element.height > 0,
-                        )
-                        .map((element) {
-                      final mappedLeft = element.left * scaleX;
-                      final mappedTop = element.top * scaleY;
-                      final mappedWidth = element.width * scaleX;
-                      final mappedHeight = element.height * scaleY;
-
-                      return pw.Positioned(
-                        left: mappedLeft,
-                        top: mappedTop,
-                        child: pw.SizedBox(
-                          width: mappedWidth,
-                          height: mappedHeight,
-                          child: pw.FittedBox(
-                            fit: pw.BoxFit.fill,
-                            child: pw.Text(
-                              element.text,
-                              style: pw.TextStyle(
-                                renderingMode:
-                                    PdfTextRenderingMode.invisible,
-                                fontSize: _invisibleTextFontSize,
-                              ),
+                // Add invisible but searchable text layer
+                for (var block in pageBlocks)
+                  for (var line in block.lines)
+                    for (var element in line.elements)
+                      pw.Positioned(
+                        left: element.left * scaleX,
+                        top: element.top * scaleY,
+                        child: pw.Opacity(
+                          opacity: 0.0,
+                          child: pw.Text(
+                            element.text,
+                            style: pw.TextStyle(
+                              font: font,
+                              fontSize: element.height * scaleY,
                             ),
                           ),
                         ),
-                      );
-                    });
-                  });
-                }),
+                      ),
               ],
             );
           },
@@ -259,7 +241,7 @@ class PdfService {
                       height: pageFormat.height,
                       child: pw.Text(
                         pageText,
-                        style: pw.TextStyle(
+                        style: const pw.TextStyle(
                           renderingMode: PdfTextRenderingMode.invisible,
                           fontSize: _invisibleTextFontSize,
                         ),

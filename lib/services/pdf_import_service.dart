@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
+import 'package:image/image.dart' as img;
 
 import 'package:file_picker/file_picker.dart';
-import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:uuid/uuid.dart';
 
 import 'pdf_service.dart';
+import 'scanner_service.dart';
 
-/// Result returned by [PdfImportService.renderPagesToImages].
+/// Result returned by [PdfImportService.processPdf] or [PdfImportService.extractMetadata].
 class PdfImportResult {
   /// Absolute paths to the rasterised PNG files, one per page, in order.
   final List<String> imagePaths;
@@ -16,33 +19,29 @@ class PdfImportResult {
   /// Original page dimensions in PDF points, one entry per page.
   final List<PdfPageDimension> pageDimensions;
 
+  /// Optional extracted text blocks per page if digital extraction was used.
+  final List<List<OcrTextBlock>>? textBlocks;
+
+  /// The resolved pixel dimensions of each page (scaled by _renderScale).
+  final List<ui.Size> imageSizes;
+
   const PdfImportResult({
     required this.imagePaths,
     required this.pageDimensions,
+    this.textBlocks,
+    required this.imageSizes,
   });
 }
 
-/// Service for importing existing (non-searchable) PDFs.
-///
-/// Presents a system file picker so the user can select a PDF, then
-/// rasterises each page into a high-resolution PNG file. The resulting
-/// image paths can be fed directly into [ScannerService.processImages],
-/// which runs the standard ML Kit OCR pipeline and ultimately produces
-/// a new, fully searchable PDF.
+/// Service for importing existing PDFs with optional lazy rendering support.
 class PdfImportService {
   static const _uuid = Uuid();
 
   /// Scale factor applied when rendering PDF pages to images.
-  ///
-  /// PDF page dimensions are measured in points (1 pt = 1/72 inch).
-  /// Multiplying by 3.0 gives ~216 DPI, which ensures high OCR quality
-  /// while keeping memory usage reasonable.
+  /// 3.0 gives ~216 DPI, ensuring high quality for viewing and OCR.
   static const _renderScale = 3.0;
 
   /// Opens the system file picker filtered to PDF files.
-  ///
-  /// Returns the absolute path of the selected PDF, or `null` if the
-  /// user cancels without picking a file.
   Future<String?> pickPdfFile() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -51,70 +50,72 @@ class PdfImportService {
     return result?.files.single.path;
   }
 
-  /// Renders every page of the PDF at [pdfPath] to a temporary PNG file.
-  ///
-  /// Each page is rasterised at [_renderScale] × its native point size by
-  /// passing `fullWidth`/`fullHeight` to [PdfPage.render], which sets the
-  /// virtual full-page size in pixels (the zoom level). This yields
-  /// approximately 216 DPI images. The RGBA pixel data returned by pdfrx is
-  /// converted to PNG using the `image` package and written to the system
-  /// temporary directory.
-  ///
-  /// [onProgress] is called after each page is rendered with the number of
-  /// pages done and the total page count.
-  ///
-  /// Returns a [PdfImportResult] with the temporary PNG file paths and the
-  /// original page dimensions (in PDF points) in page order.
-  /// The caller is responsible for deleting the image files when they are no
-  /// longer needed (see [HomeScreen._importPdf]).
-  Future<PdfImportResult> renderPagesToImages(
+  /// Opens a PDF and checks if it has a text layer.
+  Future<({bool hasText, PdfDocument document})> openAndCheckText(String pdfPath) async {
+    final document = await PdfDocument.openFile(pdfPath);
+    bool hasText = false;
+    for (final page in document.pages) {
+      final text = await page.loadStructuredText();
+      if (text != null && text.fragments.isNotEmpty) {
+        hasText = true;
+        break;
+      }
+    }
+    return (hasText: hasText, document: document);
+  }
+
+  /// Renders all pages of a PDF to high-resolution PNG images.
+  Future<PdfImportResult> processPdf(
     String pdfPath, {
-    void Function(int current, int total)? onProgress,
+    required void Function(double progress) onProgress,
   }) async {
     final document = await PdfDocument.openFile(pdfPath);
     final tempDir = await getTemporaryDirectory();
-    final imagePaths = <String>[];
-    final pageDimensions = <PdfPageDimension>[];
+    final List<String> imagePaths = [];
+    final List<PdfPageDimension> pageDimensions = [];
+    final List<List<OcrTextBlock>> textBlocks = [];
+    final List<ui.Size> imageSizes = [];
 
     try {
       for (var i = 0; i < document.pages.length; i++) {
         final page = document.pages[i];
+        pageDimensions.add(PdfPageDimension(width: page.width, height: page.height));
 
-        // Record the original page size in PDF points so that the generated
-        // searchable PDF can recreate pages at the exact same dimensions.
-        pageDimensions.add(
-          PdfPageDimension(width: page.width, height: page.height),
-        );
-
-        // fullWidth/fullHeight set the virtual full-page render size in pixels
-        // (i.e. the zoom level). Omitting width/height returns the complete
-        // page without any sub-area crop.
+        // 1. Render page with proper scaling
         final pdfImage = await page.render(
+          width: (page.width * _renderScale).toInt(),
+          height: (page.height * _renderScale).toInt(),
           fullWidth: page.width * _renderScale,
           fullHeight: page.height * _renderScale,
         );
-        if (pdfImage == null) continue;
 
-        try {
-          // pdfrx returns raw RGBA pixels; convert to PNG via the image package.
-          final imgData = img.Image.fromBytes(
+        if (pdfImage != null) {
+          // Use actual rendered dimensions
+          imageSizes.add(ui.Size(pdfImage.width.toDouble(), pdfImage.height.toDouble()));
+
+          // Encode PNG using the 'image' package
+          final image = img.Image.fromBytes(
             width: pdfImage.width,
             height: pdfImage.height,
             bytes: pdfImage.pixels.buffer,
             format: img.Format.uint8,
             numChannels: 4,
           );
-          final pngBytes = img.encodePng(imgData);
-
-          final imagePath =
-              '${tempDir.path}/import_page_${i + 1}_${_uuid.v4()}.png';
-          await File(imagePath).writeAsBytes(pngBytes);
-          imagePaths.add(imagePath);
-        } finally {
+          
+          final pngBytes = img.encodePng(image);
+          
+          final tempPath = '${tempDir.path}/page_${i + 1}_${_uuid.v4()}.png';
+          await File(tempPath).writeAsBytes(pngBytes);
+          imagePaths.add(tempPath);
+          
           pdfImage.dispose();
         }
 
-        onProgress?.call(i + 1, document.pages.length);
+        // 2. Extract text layer
+        final pageText = await page.loadStructuredText();
+        textBlocks.add(_mapPdfTextToOcrBlocks(pageText, page.width, page.height));
+
+        onProgress((i + 1) / document.pages.length);
       }
     } finally {
       await document.dispose();
@@ -123,6 +124,119 @@ class PdfImportService {
     return PdfImportResult(
       imagePaths: imagePaths,
       pageDimensions: pageDimensions,
+      textBlocks: textBlocks,
+      imageSizes: imageSizes,
     );
+  }
+
+  /// Renders a single page of a PDF to a PNG image.
+  Future<String> renderPage(String pdfPath, int pageIndex) async {
+    final document = await PdfDocument.openFile(pdfPath);
+    final tempDir = await getTemporaryDirectory();
+    
+    try {
+      if (pageIndex >= document.pages.length) {
+        throw Exception('Page index out of bounds');
+      }
+      
+      final page = document.pages[pageIndex];
+      final pdfImage = await page.render(
+        width: (page.width * _renderScale).toInt(),
+        height: (page.height * _renderScale).toInt(),
+        fullWidth: page.width * _renderScale,
+        fullHeight: page.height * _renderScale,
+      );
+
+      if (pdfImage == null) throw Exception('Failed to render page');
+
+      final image = img.Image.fromBytes(
+        width: pdfImage.width,
+        height: pdfImage.height,
+        bytes: pdfImage.pixels.buffer,
+        format: img.Format.uint8,
+        numChannels: 4,
+      );
+      
+      final pngBytes = img.encodePng(image);
+      final tempPath = '${tempDir.path}/thumb_${pageIndex}_${_uuid.v4()}.png';
+      await File(tempPath).writeAsBytes(pngBytes);
+      
+      pdfImage.dispose();
+      return tempPath;
+    } finally {
+      await document.dispose();
+    }
+  }
+
+  /// Only extracts text blocks and dimensions, without rendering images.
+  Future<PdfImportResult> extractMetadata(String pdfPath) async {
+    final document = await PdfDocument.openFile(pdfPath);
+    final List<PdfPageDimension> pageDimensions = [];
+    final List<List<OcrTextBlock>> textBlocks = [];
+    final List<ui.Size> imageSizes = [];
+
+    try {
+      for (var i = 0; i < document.pages.length; i++) {
+        final page = document.pages[i];
+        pageDimensions.add(PdfPageDimension(width: page.width, height: page.height));
+        imageSizes.add(ui.Size(page.width * _renderScale, page.height * _renderScale));
+
+        final pageText = await page.loadStructuredText();
+        textBlocks.add(_mapPdfTextToOcrBlocks(pageText, page.width, page.height));
+      }
+    } finally {
+      await document.dispose();
+    }
+
+    return PdfImportResult(
+      imagePaths: [], 
+      pageDimensions: pageDimensions,
+      textBlocks: textBlocks,
+      imageSizes: imageSizes,
+    );
+  }
+
+  List<OcrTextBlock> _mapPdfTextToOcrBlocks(PdfPageText pdfText, double width, double height) {
+    final fragments = pdfText.fragments;
+    final linesMap = <double, List<PdfPageTextFragment>>{};
+    
+    for (final fragment in fragments) {
+      final y = (fragment.bounds.top * 10).roundToDouble() / 10;
+      linesMap.putIfAbsent(y, () => []).add(fragment);
+    }
+
+    final sortedY = linesMap.keys.toList()..sort((a, b) => b.compareTo(a));
+    final ocrLines = <OcrTextLine>[];
+
+    for (final y in sortedY) {
+      final lineFragments = linesMap[y]!;
+      lineFragments.sort((a, b) => a.bounds.left.compareTo(b.bounds.left));
+      
+      final List<OcrTextElement> elements = lineFragments.map((f) => OcrTextElement(
+        text: f.text,
+        left: f.bounds.left * _renderScale,
+        top: (height - f.bounds.top) * _renderScale,
+        width: f.bounds.width * _renderScale,
+        height: f.bounds.height * _renderScale,
+      )).toList();
+
+      ocrLines.add(OcrTextLine(
+        text: lineFragments.map((f) => f.text).join(' '),
+        elements: elements,
+      ));
+    }
+
+    if (ocrLines.isEmpty) return [];
+    
+    return [
+      OcrTextBlock(
+        text: ocrLines.map((l) => l.text).join('\n'),
+        left: 0,
+        top: 0,
+        width: width * _renderScale,
+        height: height * _renderScale,
+        lines: ocrLines,
+      )
+    ];
   }
 }

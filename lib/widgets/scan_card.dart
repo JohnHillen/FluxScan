@@ -14,6 +14,9 @@ class ScanCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onShare;
   final VoidCallback onDelete;
+  final bool isSelected;
+  final bool isSelectionMode;
+  final VoidCallback? onLongPress;
 
   const ScanCard({
     super.key,
@@ -21,6 +24,9 @@ class ScanCard extends StatelessWidget {
     required this.onTap,
     required this.onShare,
     required this.onDelete,
+    this.isSelected = false,
+    this.isSelectionMode = false,
+    this.onLongPress,
   });
 
   @override
@@ -31,8 +37,17 @@ class ScanCard extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       clipBehavior: Clip.antiAlias,
+      elevation: isSelected ? 8 : 1,
+      color: isSelected ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3) : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isSelected 
+          ? BorderSide(color: theme.colorScheme.primary, width: 2)
+          : BorderSide.none,
+      ),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
@@ -79,24 +94,33 @@ class ScanCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // Action buttons
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.share, size: 20),
-                    tooltip: 'Share',
-                    onPressed: onShare,
-                    visualDensity: VisualDensity.compact,
+              // Action buttons or Selection Indicator
+              if (isSelectionMode)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Icon(
+                    isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                    color: isSelected ? theme.colorScheme.primary : theme.colorScheme.onSurface.withAlpha(64),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 20),
-                    tooltip: 'Delete',
-                    onPressed: onDelete,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ],
-              ),
+                )
+              else
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.share, size: 20),
+                      tooltip: 'Share',
+                      onPressed: onShare,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 20),
+                      tooltip: 'Delete',
+                      onPressed: onDelete,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ),
             ],
           ),
         ),

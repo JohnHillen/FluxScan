@@ -246,21 +246,21 @@ void main() {
   group('multi-block text', () {
     test('finds keyword and date across different blocks', () {
       final blocks = [
-        OcrTextBlock(
+        const OcrTextBlock(
           text: 'Rechnung',
           left: 0,
           top: 0,
           width: 100,
           height: 20,
-          lines: const [],
+          lines: [],
         ),
-        OcrTextBlock(
+        const OcrTextBlock(
           text: 'Datum: 14.04.2026',
           left: 0,
           top: 30,
           width: 200,
           height: 20,
-          lines: const [],
+          lines: [],
         ),
       ];
       expect(

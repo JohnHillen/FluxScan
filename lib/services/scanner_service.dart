@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:cunning_document_scanner/cunning_document_scanner.dart';
+import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
@@ -251,6 +251,7 @@ class ScannerService {
     final originalPaths = <String>[];
     final enhancedPaths = <String>[];
     final allTextBlocks = <List<OcrTextBlock>>[];
+    final imageSizes = <Size>[];
     final allText = StringBuffer();
 
     for (var i = 0; i < imagePaths.length; i++) {
@@ -275,6 +276,19 @@ class ScannerService {
       final textBlocks = await recognizeTextBlocks(enhancedPath);
       allTextBlocks.add(textBlocks);
 
+      // Step 4: Get image size (Fast metadata-only extraction)
+      try {
+        final bytes = await File(currentPath).readAsBytes();
+        final buffer = await ImmutableBuffer.fromUint8List(bytes);
+        final descriptor = await ImageDescriptor.encoded(buffer);
+        imageSizes.add(Size(descriptor.width.toDouble(), descriptor.height.toDouble()));
+        descriptor.dispose();
+        buffer.dispose();
+      } catch (e) {
+        debugPrint('Error getting image size for $currentPath: $e');
+        imageSizes.add(const Size(2480, 3508)); // A4 fallback
+      }
+
       final pageText = textBlocks.map((b) => b.text).join('\n');
       if (allText.isNotEmpty && pageText.isNotEmpty) {
         allText.write('\n\n--- Page Break ---\n\n');
@@ -288,6 +302,7 @@ class ScannerService {
       originalImagePaths: originalPaths,
       enhancedImagePaths: enhancedPaths,
       textBlocks: allTextBlocks,
+      imageSizes: imageSizes,
       combinedText: allText.toString(),
     );
   }
@@ -305,6 +320,7 @@ class OcrTextElement {
   final double top;
   final double width;
   final double height;
+  final double fontSizeScale;
 
   const OcrTextElement({
     required this.text,
@@ -312,16 +328,25 @@ class OcrTextElement {
     required this.top,
     required this.width,
     required this.height,
+    this.fontSizeScale = 1.0,
   });
 
   /// Returns a copy with the given fields replaced.
-  /// Only [text] may change; bounding box fields are always preserved.
-  OcrTextElement copyWith({String? text}) => OcrTextElement(
+  OcrTextElement copyWith({
+    String? text,
+    double? left,
+    double? top,
+    double? width,
+    double? height,
+    double? fontSizeScale,
+  }) =>
+      OcrTextElement(
         text: text ?? this.text,
-        left: left,
-        top: top,
-        width: width,
-        height: height,
+        left: left ?? this.left,
+        top: top ?? this.top,
+        width: width ?? this.width,
+        height: height ?? this.height,
+        fontSizeScale: fontSizeScale ?? this.fontSizeScale,
       );
 
   Map<String, dynamic> toJson() => {
@@ -330,6 +355,7 @@ class OcrTextElement {
         'top': top,
         'width': width,
         'height': height,
+        'fontSizeScale': fontSizeScale,
       };
 
   factory OcrTextElement.fromJson(Map<String, dynamic> json) => OcrTextElement(
@@ -338,6 +364,7 @@ class OcrTextElement {
         top: (json['top'] as num).toDouble(),
         width: (json['width'] as num).toDouble(),
         height: (json['height'] as num).toDouble(),
+        fontSizeScale: (json['fontSizeScale'] as num? ?? 1.0).toDouble(),
       );
 }
 
@@ -434,6 +461,9 @@ class ProcessedScan {
   /// Structured OCR text blocks per page.
   final List<List<OcrTextBlock>> textBlocks;
 
+  /// The pixel dimensions of each page.
+  final List<Size> imageSizes;
+
   /// All OCR text combined into a single string.
   final String combinedText;
 
@@ -441,6 +471,7 @@ class ProcessedScan {
     required this.originalImagePaths,
     required this.enhancedImagePaths,
     required this.textBlocks,
+    required this.imageSizes,
     required this.combinedText,
   });
 }
